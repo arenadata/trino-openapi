@@ -251,8 +251,7 @@ public class OpenApiSpec
         return new OpenApiSpecInfo(
                 tables.buildOrThrow(),
                 handles.buildOrThrow(),
-                errorPointers.buildOrThrow()
-        );
+                errorPointers.buildOrThrow());
     }
 
     private Map<String, Map<PathItem.HttpMethod, List<SecurityRequirement>>> getPathSecurityRequirements(

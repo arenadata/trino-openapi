@@ -187,7 +187,8 @@ public class OpenApiTableHandle
         return tableHandle;
     }
 
-    public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(Constraint constraint, Map<String, OpenApiColumn> columns, int domainExpansionLimit)
+    public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(Constraint constraint,
+            Map<String, OpenApiColumn> columns, int domainExpansionLimit)
     {
         TupleDomain<ColumnHandle> summary = constraint.getSummary();
         // the only reason not to use isNone is so the linter doesn't complain about not checking an Optional
@@ -203,7 +204,8 @@ public class OpenApiTableHandle
                 continue;
             }
 
-            TupleDomain<ColumnHandle> newConstraint = normalizeConstraint(column.getHandle(), summary, domainExpansionLimit);
+            TupleDomain<ColumnHandle> newConstraint =
+                    normalizeConstraint(column.getHandle(), summary, domainExpansionLimit);
             if (newConstraint == null || newConstraint.getDomains().isEmpty()) {
                 continue;
             }
@@ -239,7 +241,8 @@ public class OpenApiTableHandle
                 true));
     }
 
-    private TupleDomain<ColumnHandle> normalizeConstraint(OpenApiColumnHandle column, TupleDomain<ColumnHandle> constraint, int domainExpansionLimit)
+    private TupleDomain<ColumnHandle> normalizeConstraint(OpenApiColumnHandle column,
+            TupleDomain<ColumnHandle> constraint, int domainExpansionLimit)
     {
         //noinspection OptionalGetWithoutIsPresent
         Domain domain = constraint.getDomains().get().get(column);
@@ -258,7 +261,8 @@ public class OpenApiTableHandle
                 .orElse(null);
     }
 
-    private boolean validateConstraint(OpenApiColumnHandle column, TupleDomain<ColumnHandle> currentConstraint, TupleDomain<ColumnHandle> newConstraint)
+    private boolean validateConstraint(OpenApiColumnHandle column, TupleDomain<ColumnHandle> currentConstraint,
+            TupleDomain<ColumnHandle> newConstraint)
     {
         if (currentConstraint.getDomains().isEmpty() || !currentConstraint.getDomains().get().containsKey(column)) {
             return true;
@@ -271,10 +275,12 @@ public class OpenApiTableHandle
             return false;
         }
         // can push down only the first predicate against this column
-        throw new TrinoException(INVALID_ROW_FILTER, "Already pushed down a predicate for " + column.getName() + " which only supports a single value");
+        throw new TrinoException(INVALID_ROW_FILTER,
+                "Already pushed down a predicate for " + column.getName() + " which only supports a single value");
     }
 
-    public LimitApplicationResult<ConnectorTableHandle> applyLimit(long limit) {
+    public LimitApplicationResult<ConnectorTableHandle> applyLimit(long limit)
+    {
         this.limit = OptionalLong.of(limit);
         return new LimitApplicationResult<>(this, true, false);
     }

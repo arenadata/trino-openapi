@@ -33,8 +33,7 @@ public record OpenApiCacheEntity(
         Map<String, Map<PathItem.HttpMethod, List<SecurityRequirement>>> pathSecurityRequirements,
         Map<String, SecurityScheme> securitySchemas,
         List<SecurityRequirement> securityRequirements,
-        boolean isFallback
-)
+        boolean isFallback)
 {
     public static final OpenApiCacheEntity FALLBACK = new OpenApiCacheEntity();
 
