@@ -152,6 +152,7 @@ public class OpenApiClient
         if (pageColumn.isEmpty() || getFilter(pageColumn.get(), table.getConstraint()) != null) {
             return makeRequest(table, httpPath, pathWithParams.getValue(), bodyGenerator, responseHandler);
         }
+        long limit = table.getLimit().orElse(Integer.MAX_VALUE);
         return pageIterator(
                 page -> {
                     TupleDomain<ColumnHandle> pageConstraint = TupleDomain.fromFixedValues(Map.of(
@@ -163,7 +164,7 @@ public class OpenApiClient
                     return makeRequest(pageTable, httpPath, pathWithParams.getValue(), bodyGenerator, responseHandler);
                 },
                 0,
-                Integer.MAX_VALUE,
+                limit,
                 1);
     }
 
@@ -744,13 +745,13 @@ public class OpenApiClient
     private Iterable<List<?>> pageIterator(
             IntFunction<Iterable<List<?>>> getter,
             int offset,
-            final int limit,
+            final long limit,
             int pageIncrement)
     {
         return () -> new Iterator<>()
         {
             int resultSize;
-            int page = offset + 1;
+            int page = offset;
             Iterator<List<?>> rows;
 
             @Override
