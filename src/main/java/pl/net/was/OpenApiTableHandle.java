@@ -187,6 +187,14 @@ public class OpenApiTableHandle
         return tableHandle;
     }
 
+    public OpenApiTableHandle cloneWithBaseFields()
+    {
+        OpenApiTableHandle tableHandle = this.clone();
+        tableHandle.constraint = TupleDomain.none();
+        tableHandle.limit = OptionalLong.empty();
+        return tableHandle;
+    }
+
     public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(Constraint constraint,
             Map<String, OpenApiColumn> columns, int domainExpansionLimit)
     {

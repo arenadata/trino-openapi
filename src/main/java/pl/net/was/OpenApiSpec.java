@@ -101,6 +101,7 @@ public class OpenApiSpec
     private static final String PAGINATION_RESULTS_PATH = "resultsPath";
     private static final String ERROR_PATH = "errorPath";
     private static final String PAGINATION_PAGE_PARAM = "pageParam";
+    private static final String PAGINATION_PAGE_SIZE_PARAM = "limitParam";
     private final LoadingCache<String, OpenApiCacheEntity> openApiCache;
     private final OpenApiConfig config;
     private static final Pattern JSON_POINTER_PATTERN = Pattern.compile("\\$response\\.body#(/.*)");
@@ -350,7 +351,7 @@ public class OpenApiSpec
         if (!name.getSchemaName().equals(SCHEMA_NAME)) {
             throw new SchemaNotFoundException(name.getSchemaName());
         }
-        OpenApiTableHandle handle = getOpenApi().handles().get(name.getTableName());
+        OpenApiTableHandle handle = getOpenApi().handles().get(name.getTableName()).cloneWithBaseFields();
         if (handle == null) {
             throw new TableNotFoundException(name);
         }
@@ -419,7 +420,8 @@ public class OpenApiSpec
                             propEntry.getKey(),
                             propEntry.getValue(),
                             !requiredProperties.contains(propEntry.getKey()),
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM))))
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
                     .filter(Optional::isPresent)
                     .forEach(column -> result.add(column.get()));
             getResultsSchema(schema, resultsPointer)
@@ -429,7 +431,8 @@ public class OpenApiSpec
                             resultsPointer,
                             propEntry.getValue(),
                             !requiredProperties.contains(propEntry.getKey()),
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM))))
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
                     .filter(Optional::isPresent)
                     .forEach(column -> result.add(column.get()));
         }
@@ -451,7 +454,8 @@ public class OpenApiSpec
                                     new HttpPath(method, path), ParameterLocation.BODY) : ImmutableMap.of(),
                             !requiredProperties.contains(propEntry.getKey()),
                             false,
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM))))
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
                     .filter(Optional::isPresent)
                     .map(Optional::get)
                     .map(column -> {
@@ -491,7 +495,8 @@ public class OpenApiSpec
                                 // keep pagination parameters as hidden columns, so it's possible to
                                 // see the page number (how many requests were made) and change the default per-page limit
                                 specExtension.containsValue(parameter.getName()),
-                                parameter.getName().equals(specExtension.get(PAGINATION_PAGE_PARAM)));
+                                parameter.getName().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
+                                parameter.getName().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM)));
                     })
                     .filter(Optional::isPresent)
                     .map(Optional::get)
@@ -615,7 +620,8 @@ public class OpenApiSpec
             String sourceName,
             Schema<?> schema,
             boolean isNullable,
-            boolean isPageNumber)
+            boolean isPageNumber,
+            boolean isPageSize)
     {
         String name = getIdentifier(sourceName);
         return convertType(schema).map(type -> OpenApiColumn.builder()
@@ -626,6 +632,7 @@ public class OpenApiSpec
                 .setIsNullable(Optional.ofNullable(schema.getNullable()).orElse(isNullable))
                 .setIsHidden(false)
                 .setIsPageNumber(isPageNumber)
+                .setIsPageSize(isPageSize)
                 .setComment(schema.getDescription())
                 .build());
     }
@@ -635,7 +642,8 @@ public class OpenApiSpec
             JsonPointer resultsPointer,
             Schema<?> schema,
             boolean isNullable,
-            boolean isPageNumber)
+            boolean isPageNumber,
+            boolean isPageSize)
     {
         String name = getIdentifier(sourceName);
         return convertType(schema).map(type -> OpenApiColumn.builder()
@@ -647,6 +655,7 @@ public class OpenApiSpec
                 .setIsNullable(Optional.ofNullable(schema.getNullable()).orElse(isNullable))
                 .setIsHidden(false)
                 .setIsPageNumber(isPageNumber)
+                .setIsPageSize(isPageSize)
                 .setComment(schema.getDescription())
                 .build());
     }
@@ -658,7 +667,8 @@ public class OpenApiSpec
             Map<HttpPath, ParameterLocation> optionalPredicate,
             boolean isNullable,
             boolean isHidden,
-            boolean isPageNumber)
+            boolean isPageNumber,
+            boolean isPageSize)
     {
         String name = getIdentifier(sourceName);
         return convertType(schema).map(type -> OpenApiColumn.builder()
@@ -671,6 +681,7 @@ public class OpenApiSpec
                 .setIsNullable(Optional.ofNullable(schema.getNullable()).orElse(isNullable))
                 .setIsHidden(isHidden)
                 .setIsPageNumber(isPageNumber)
+                .setIsPageSize(isPageSize)
                 .setComment(schema.getDescription())
                 .build());
     }
