@@ -351,11 +351,11 @@ public class OpenApiSpec
         if (!name.getSchemaName().equals(SCHEMA_NAME)) {
             throw new SchemaNotFoundException(name.getSchemaName());
         }
-        OpenApiTableHandle handle = getOpenApi().handles().get(name.getTableName()).cloneWithBaseFields();
+        OpenApiTableHandle handle = getOpenApi().handles().get(name.getTableName());
         if (handle == null) {
             throw new TableNotFoundException(name);
         }
-        return handle;
+        return handle.cloneWithBaseFields();
     }
 
     public Map<HttpPath, JsonPointer> getErrorPointers(SchemaTableName name)
