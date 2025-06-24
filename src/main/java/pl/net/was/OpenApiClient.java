@@ -97,15 +97,15 @@ import static pl.net.was.OpenApiSpec.ROW_ID;
 
 public class OpenApiClient
 {
-    private static final Logger log = Logger.get(OpenApiRecordSetProvider.class);
+    private static final Logger log = Logger.get(OpenApiClient.class);
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
-    public static final String USER_AGENT_VALUE =
+    private static final String USER_AGENT_VALUE =
             "trino-openapi/" + OpenApiClient.class.getPackage().getImplementationVersion();
     //todo could be moved to config
     private static final int DEFAULT_PAGE_SIZE = 5;
     private static final int DEFAULT_LIMIT = Integer.MAX_VALUE;
-    private final URI baseUri;
 
+    private final URI baseUri;
     private final HttpClient httpClient;
     private final OpenApiSpec openApiSpec;
     private final RateLimiter rateLimiter;
