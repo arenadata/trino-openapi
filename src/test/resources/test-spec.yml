@@ -1,0 +1,54 @@
+openapi: 3.0.0
+info:
+  title: test
+  version: 1.0
+paths:
+  /namespaces/{namespace}/indexes/{index}/search:
+    post:
+      operationId: index_search
+      parameters:
+        - explode: false
+          in: path
+          name: namespace
+          required: true
+          schema:
+            type: string
+          style: simple
+        - explode: false
+          in: path
+          name: index
+          required: true
+          schema:
+            type: string
+          style: simple
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchRequest'
+        description: ""
+        required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IndexSearchResponse'
+          description: Index search results
+        "500":
+          description: Unable to search index
+      summary: Search a vector index in a namespace
+components:
+  schemas:
+    SearchRequest:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+    IndexSearchResponse:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64

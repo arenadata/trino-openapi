@@ -39,6 +39,7 @@ public class OpenApiColumn
     private final Map<HttpPath, ParameterLocation> optionalPredicate;
     private final ColumnMetadata metadata;
     private final boolean isPageNumber;
+    private final boolean isPageSize;
     private final OpenApiColumnHandle handle;
 
     private OpenApiColumn(
@@ -52,6 +53,7 @@ public class OpenApiColumn
             boolean isNullable,
             boolean isHidden,
             boolean isPageNumber,
+            boolean isPageSize,
             String comment)
     {
         this.name = name;
@@ -69,6 +71,7 @@ public class OpenApiColumn
                 .setComment(Optional.ofNullable(comment))
                 .build();
         this.isPageNumber = isPageNumber;
+        this.isPageSize = isPageSize;
         this.handle = new OpenApiColumnHandle(name, type);
     }
 
@@ -115,6 +118,11 @@ public class OpenApiColumn
     public boolean isPageNumber()
     {
         return isPageNumber;
+    }
+
+    public boolean isPageSize()
+    {
+        return isPageSize;
     }
 
     public OpenApiColumnHandle getHandle()
@@ -192,6 +200,7 @@ public class OpenApiColumn
         private boolean isNullable;
         private boolean isHidden;
         private boolean isPageNumber;
+        private boolean isPageSize;
         private String comment;
 
         private Builder() {}
@@ -208,6 +217,7 @@ public class OpenApiColumn
             this.isNullable = handle.getMetadata().isNullable();
             this.isHidden = handle.getMetadata().isHidden();
             this.isPageNumber = handle.isPageNumber();
+            this.isPageSize = handle.isPageSize();
             this.comment = handle.getMetadata().getComment();
         }
 
@@ -271,6 +281,12 @@ public class OpenApiColumn
             return this;
         }
 
+        public OpenApiColumn.Builder setIsPageSize(boolean pageSize)
+        {
+            this.isPageSize = pageSize;
+            return this;
+        }
+
         public OpenApiColumn.Builder setComment(String name)
         {
             if (name != null) {
@@ -292,6 +308,7 @@ public class OpenApiColumn
                     isNullable,
                     isHidden,
                     isPageNumber,
+                    isPageSize,
                     comment);
         }
     }

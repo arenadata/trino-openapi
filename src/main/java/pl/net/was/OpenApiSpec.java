@@ -16,11 +16,15 @@ package pl.net.was;
 
 import com.fasterxml.jackson.core.JsonPointer;
 import com.google.common.base.CaseFormat;
+import com.google.common.cache.CacheBuilder;
+import com.google.common.cache.CacheLoader;
+import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ListMultimap;
 import com.google.inject.Inject;
+import io.airlift.log.Logger;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.Operation;
 import io.swagger.v3.oas.models.PathItem;
@@ -48,6 +52,7 @@ import io.trino.spi.type.MapType;
 import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
+import pl.net.was.cache.OpenApiCacheEntity;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -55,6 +60,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
@@ -81,6 +87,8 @@ import static java.util.stream.Collectors.toMap;
 
 public class OpenApiSpec
 {
+    private static final Logger log = Logger.get(OpenApiSpec.class);
+
     public static final String SCHEMA_NAME = "default";
     public static final String ROW_ID = "__trino_row_id";
     public static final String HTTP_OK = "200";
@@ -93,28 +101,81 @@ public class OpenApiSpec
     private static final String PAGINATION_RESULTS_PATH = "resultsPath";
     private static final String ERROR_PATH = "errorPath";
     private static final String PAGINATION_PAGE_PARAM = "pageParam";
+    private static final String PAGINATION_PAGE_SIZE_PARAM = "limitParam";
+    private final LoadingCache<String, OpenApiCacheEntity> openApiCache;
+    private final OpenApiConfig config;
     private static final Pattern JSON_POINTER_PATTERN = Pattern.compile("\\$response\\.body#(/.*)");
-
-    // should only be used to manually resolving references
-    private final OpenAPI openApi;
-    private final Map<String, List<OpenApiColumn>> tables;
-    private final Map<String, OpenApiTableHandle> handles;
-    private final Map<String, Map<HttpPath, JsonPointer>> errorPointers;
-
-    private final Map<String, Map<PathItem.HttpMethod, List<SecurityRequirement>>> pathSecurityRequirements;
-    private final Map<String, SecurityScheme> securitySchemas;
-    private final List<SecurityRequirement> securityRequirements;
 
     @Inject
     public OpenApiSpec(OpenApiConfig config)
     {
-        this(parse(requireNonNull(config, "config is null").getSpecLocation()));
+        this.config = requireNonNull(config, "config is null");
+        openApiCache = CacheBuilder.newBuilder().build(CacheLoader.from(this::loadOpenApi));
+        log.info("OpenApiSpec loaded");
     }
 
-    OpenApiSpec(OpenAPI openApi)
+    private OpenApiCacheEntity loadOpenApi()
     {
-        this.openApi = requireNonNull(openApi, "openApi is null");
+        try {
+            return getOpenApiCacheEntity();
+        }
+        catch (Exception e) {
+            log.error("Failed to load OpenAPI specification", e);
+            return OpenApiCacheEntity.FALLBACK;
+        }
+    }
 
+    private OpenApiCacheEntity getOpenApiCacheEntity()
+    {
+        OpenAPI openApi = parse(config.getSpecLocation());
+        OpenApiSpecInfo openApiSpecInfo = getTables(openApi);
+        logTableHandles(openApiSpecInfo.tables(), openApiSpecInfo.handles());
+        return new OpenApiCacheEntity(
+                openApi,
+                openApiSpecInfo.tables(),
+                openApiSpecInfo.handles(),
+                openApiSpecInfo.errorPointers(),
+                getPathSecurityRequirements(openApi),
+                getSecuritySchemas(openApi),
+                getSecurityRequirements(openApi));
+    }
+
+    public Map<String, List<OpenApiColumn>> getTables()
+    {
+        return getOpenApi().tables();
+    }
+
+    public Map<String, Map<PathItem.HttpMethod, List<SecurityRequirement>>> getPathSecurityRequirements()
+    {
+        return getOpenApi().pathSecurityRequirements();
+    }
+
+    public Map<String, SecurityScheme> getSecuritySchemas()
+    {
+        return getOpenApi().securitySchemas();
+    }
+
+    public List<SecurityRequirement> getSecurityRequirements()
+    {
+        return getOpenApi().securityRequirements();
+    }
+
+    private OpenApiCacheEntity getOpenApi()
+    {
+        OpenApiCacheEntity entity = openApiCache.getUnchecked(getOpenApiVersion());
+        if (entity.isFallback()) {
+            return getOpenApiCacheEntity();
+        }
+        return entity;
+    }
+
+    private String getOpenApiVersion()
+    {
+        return parse(config.getSpecLocation()).getInfo().getVersion();
+    }
+
+    private OpenApiSpecInfo getTables(OpenAPI openApi)
+    {
         /*
         Path params are assumed to be primary keys, so paths without any params are merged with same path with params.
         For example, /orgs and /orgs/{org} will be represented by a single table named orgs.
@@ -146,7 +207,8 @@ public class OpenApiSpec
                 tables.put(Map.entry(
                         groupEntry.getKey(),
                         mergeColumns(getColumns(pathItems.getFirst(), firstEntry.getKey()))));
-                Map<PathItem.HttpMethod, List<String>> tablePaths = methodsToPaths(firstEntry.getValue(), firstEntry.getKey());
+                Map<PathItem.HttpMethod, List<String>> tablePaths =
+                        methodsToPaths(firstEntry.getValue(), firstEntry.getKey());
                 errorPointers.put(groupEntry.getKey(), errorPointers(firstEntry.getValue(), firstEntry.getKey()));
                 handles.put(groupEntry.getKey(), tableHandle(groupEntry.getKey(), tablePaths));
                 continue;
@@ -155,7 +217,8 @@ public class OpenApiSpec
                     .min(comparingInt(entry -> entry.getKey().length()))
                     .orElseThrow();
             List<OpenApiColumn> baseColumns = getColumns(baseEntry.getValue(), baseEntry.getKey());
-            Map<PathItem.HttpMethod, List<String>> baseMethods = methodsToPaths(baseEntry.getValue(), baseEntry.getKey());
+            Map<PathItem.HttpMethod, List<String>> baseMethods =
+                    methodsToPaths(baseEntry.getValue(), baseEntry.getKey());
             Map<HttpPath, JsonPointer> baseErrorPointers = errorPointers(baseEntry.getValue(), baseEntry.getKey());
             // treat all combinations of path params as primary keys, which means every path with params is mapped to a separate table,
             // but combine it with columns from the base path
@@ -176,7 +239,8 @@ public class OpenApiSpec
                                 .collect(toImmutableMap(
                                         Map.Entry::getKey,
                                         Map.Entry::getValue,
-                                        (x, y) -> Stream.concat(x.stream(), y.stream()).distinct().collect(toImmutableList())));
+                                        (x, y) -> Stream.concat(x.stream(), y.stream()).distinct()
+                                                .collect(toImmutableList())));
                         errorPointers.put(tableName, Stream.concat(
                                         baseErrorPointers.entrySet().stream(),
                                         errorPointers(entry.getValue(), entry.getKey()).entrySet().stream())
@@ -185,11 +249,16 @@ public class OpenApiSpec
                         handles.put(tableName, tableHandle(tableName, tablePaths));
                     });
         }
-        this.tables = tables.buildOrThrow();
-        this.handles = handles.buildOrThrow();
-        this.errorPointers = errorPointers.buildOrThrow();
+        return new OpenApiSpecInfo(
+                tables.buildOrThrow(),
+                handles.buildOrThrow(),
+                errorPointers.buildOrThrow());
+    }
 
-        this.pathSecurityRequirements = openApi.getPaths().entrySet().stream()
+    private Map<String, Map<PathItem.HttpMethod, List<SecurityRequirement>>> getPathSecurityRequirements(
+            OpenAPI openApi)
+    {
+        return openApi.getPaths().entrySet().stream()
                 .map(pathEntry -> Map.entry(
                         pathEntry.getKey(),
                         pathEntry.getValue().readOperationsMap().entrySet().stream()
@@ -199,8 +268,49 @@ public class OpenApiSpec
                                         opEntry.getValue().getSecurity()))
                                 .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue))))
                 .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
-        this.securitySchemas = openApi.getComponents().getSecuritySchemes();
-        this.securityRequirements = openApi.getSecurity();
+    }
+
+    private void logTableHandles(Map<String, List<OpenApiColumn>> tables,
+            Map<String, OpenApiTableHandle> handles)
+    {
+        handles.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .flatMap(entry -> Stream.concat(Stream.of(
+                                "SELECT FROM " + entry.getKey() + " maps to: " +
+                                        pathsToString(entry.getValue().getSelectMethod(), entry.getValue().getSelectPaths()),
+                                "INSERT INTO " + entry.getKey() + " maps to: " +
+                                        pathsToString(entry.getValue().getInsertMethod(), entry.getValue().getInsertPaths()),
+                                "UPDATE " + entry.getKey() + " maps to: " +
+                                        pathsToString(entry.getValue().getUpdateMethod(), entry.getValue().getUpdatePaths()),
+                                "DELETE FROM " + entry.getKey() + " maps to: " +
+                                        pathsToString(entry.getValue().getDeleteMethod(), entry.getValue().getDeletePaths())),
+                        tables.get(entry.getKey()).stream()
+                                .filter(column -> !column.getRequiresPredicate().isEmpty() ||
+                                        !column.getOptionalPredicate().isEmpty())
+                                .map(column -> entry.getKey() + "." + column.getName() + " is " +
+                                        (column.isPageNumber() ? "the page number, " : "") +
+                                        "required for: " + column.getRequiresPredicate() + ", " +
+                                        "optional for: " + column.getOptionalPredicate())))
+                .forEach(log::info);
+    }
+
+    private Map<String, SecurityScheme> getSecuritySchemas(OpenAPI openApi)
+    {
+        return openApi.getComponents().getSecuritySchemes();
+    }
+
+    private List<SecurityRequirement> getSecurityRequirements(OpenAPI openApi)
+    {
+        return openApi.getSecurity();
+    }
+
+    private static String pathsToString(PathItem.HttpMethod method, List<String> paths)
+    {
+        return Optional.of(String.join(
+                        ", ",
+                        paths.stream().map(path -> method + " " + path).toList()))
+                .filter(value -> !value.isBlank())
+                .orElse("<none>");
     }
 
     private String stripPathParams(String key)
@@ -208,7 +318,7 @@ public class OpenApiSpec
         return key.replaceAll("/\\{[^\\}]+\\}", "");
     }
 
-    private static OpenAPI parse(String specLocation)
+    private OpenAPI parse(String specLocation)
     {
         ParseOptions parseOptions = new ParseOptions();
         parseOptions.setResolveFully(true);
@@ -216,7 +326,8 @@ public class OpenApiSpec
         OpenAPI openAPI = result.getOpenAPI();
 
         if (result.getMessages() != null && !result.getMessages().isEmpty()) {
-            throw new IllegalArgumentException("Failed to parse the OpenAPI spec: " + String.join(", ", result.getMessages()));
+            throw new IllegalArgumentException(
+                    "Failed to parse the OpenAPI spec: " + String.join(", ", result.getMessages()));
         }
 
         return openAPI;
@@ -235,21 +346,16 @@ public class OpenApiSpec
                 op.getResponses().get(HTTP_OK).getContent().get(MIME_JSON) != null;
     }
 
-    public Map<String, List<OpenApiColumn>> getTables()
-    {
-        return tables;
-    }
-
     public OpenApiTableHandle getTableHandle(SchemaTableName name)
     {
         if (!name.getSchemaName().equals(SCHEMA_NAME)) {
             throw new SchemaNotFoundException(name.getSchemaName());
         }
-        OpenApiTableHandle handle = this.handles.get(name.getTableName());
+        OpenApiTableHandle handle = getOpenApi().handles().get(name.getTableName());
         if (handle == null) {
             throw new TableNotFoundException(name);
         }
-        return handle;
+        return handle.cloneWithBaseFields();
     }
 
     public Map<HttpPath, JsonPointer> getErrorPointers(SchemaTableName name)
@@ -257,7 +363,7 @@ public class OpenApiSpec
         if (!name.getSchemaName().equals(SCHEMA_NAME)) {
             throw new SchemaNotFoundException(name.getSchemaName());
         }
-        Map<HttpPath, JsonPointer> result = this.errorPointers.get(name.getTableName());
+        Map<HttpPath, JsonPointer> result = getOpenApi().errorPointers().get(name.getTableName());
         if (result == null) {
             throw new TableNotFoundException(name);
         }
@@ -300,7 +406,8 @@ public class OpenApiSpec
             resultsPointer = parseJsonPointer(specExtension.get(PAGINATION_RESULTS_PATH));
         }
         catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("Invalid value of %s: %s. %s".formatted(PAGINATION_RESULTS_PATH, specExtension.get(PAGINATION_RESULTS_PATH), e.getMessage()));
+            throw new IllegalArgumentException("Invalid value of %s: %s. %s".formatted(PAGINATION_RESULTS_PATH,
+                    specExtension.get(PAGINATION_RESULTS_PATH), e.getMessage()));
         }
 
         Schema<?> schema = getResponseSchema(op);
@@ -313,7 +420,8 @@ public class OpenApiSpec
                             propEntry.getKey(),
                             propEntry.getValue(),
                             !requiredProperties.contains(propEntry.getKey()),
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM))))
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
                     .filter(Optional::isPresent)
                     .forEach(column -> result.add(column.get()));
             getResultsSchema(schema, resultsPointer)
@@ -323,7 +431,8 @@ public class OpenApiSpec
                             resultsPointer,
                             propEntry.getValue(),
                             !requiredProperties.contains(propEntry.getKey()),
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM))))
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
                     .filter(Optional::isPresent)
                     .forEach(column -> result.add(column.get()));
         }
@@ -339,11 +448,14 @@ public class OpenApiSpec
                     .map(propEntry -> getPredicateColumn(
                             propEntry.getKey(),
                             propEntry.getValue(),
-                            requiredProperties.contains(propEntry.getKey()) ? ImmutableMap.of(new HttpPath(method, path), ParameterLocation.BODY) : ImmutableMap.of(),
-                            !requiredProperties.contains(propEntry.getKey()) ? ImmutableMap.of(new HttpPath(method, path), ParameterLocation.BODY) : ImmutableMap.of(),
+                            requiredProperties.contains(propEntry.getKey()) ? ImmutableMap.of(
+                                    new HttpPath(method, path), ParameterLocation.BODY) : ImmutableMap.of(),
+                            !requiredProperties.contains(propEntry.getKey()) ? ImmutableMap.of(
+                                    new HttpPath(method, path), ParameterLocation.BODY) : ImmutableMap.of(),
                             !requiredProperties.contains(propEntry.getKey()),
                             false,
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM))))
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
+                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
                     .filter(Optional::isPresent)
                     .map(Optional::get)
                     .map(column -> {
@@ -368,18 +480,23 @@ public class OpenApiSpec
             // predicate values will be saved in the table handle and copied to result rows
             op.getParameters().stream()
                     .map(parameter -> {
-                        ParameterLocation parameterLocation = parameter.getIn() == null ? ParameterLocation.NONE : ParameterLocation.valueOf(parameter.getIn().toUpperCase(Locale.ENGLISH));
+                        ParameterLocation parameterLocation =
+                                parameter.getIn() == null ? ParameterLocation.NONE : ParameterLocation.valueOf(
+                                        parameter.getIn().toUpperCase(Locale.ENGLISH));
                         return getPredicateColumn(
                                 parameter.getName(),
                                 parameter.getSchema(),
-                                parameter.getRequired() ? ImmutableMap.of(new HttpPath(method, path), parameterLocation) : ImmutableMap.of(),
-                                !parameter.getRequired() ? ImmutableMap.of(new HttpPath(method, path), parameterLocation) : ImmutableMap.of(),
+                                parameter.getRequired() ? ImmutableMap.of(new HttpPath(method, path),
+                                        parameterLocation) : ImmutableMap.of(),
+                                !parameter.getRequired() ? ImmutableMap.of(new HttpPath(method, path),
+                                        parameterLocation) : ImmutableMap.of(),
                                 // always nullable, because they're only required as predicates, not in INSERT statements
                                 true,
                                 // keep pagination parameters as hidden columns, so it's possible to
                                 // see the page number (how many requests were made) and change the default per-page limit
                                 specExtension.containsValue(parameter.getName()),
-                                parameter.getName().equals(specExtension.get(PAGINATION_PAGE_PARAM)));
+                                parameter.getName().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
+                                parameter.getName().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM)));
                     })
                     .filter(Optional::isPresent)
                     .map(Optional::get)
@@ -414,7 +531,8 @@ public class OpenApiSpec
             return JsonPointer.empty();
         }
         if (expression.startsWith("$")) {
-            throw new IllegalArgumentException("Complex JSON pointer or JSON path expressions are not supported");
+            throw new IllegalArgumentException(
+                    "Complex JSON pointer or JSON path expressions are not supported");
         }
         if (!expression.startsWith("/")) {
             expression = "/" + expression;
@@ -483,7 +601,9 @@ public class OpenApiSpec
             String name = resultsPointer.getMatchingProperty();
             schema = getSchemaProperties(schema).get(name);
             if (schema == null) {
-                throw new IllegalArgumentException("Invalid value of %s: unknown field %s".formatted(JSON_POINTER_PATTERN, resultsPointer));
+                throw new IllegalArgumentException(
+                        "Invalid value of %s: unknown field %s".formatted(JSON_POINTER_PATTERN,
+                                resultsPointer));
             }
             // TODO validate that the schema is an array?
             resultsPointer = resultsPointer.tail();
@@ -500,7 +620,8 @@ public class OpenApiSpec
             String sourceName,
             Schema<?> schema,
             boolean isNullable,
-            boolean isPageNumber)
+            boolean isPageNumber,
+            boolean isPageSize)
     {
         String name = getIdentifier(sourceName);
         return convertType(schema).map(type -> OpenApiColumn.builder()
@@ -511,6 +632,7 @@ public class OpenApiSpec
                 .setIsNullable(Optional.ofNullable(schema.getNullable()).orElse(isNullable))
                 .setIsHidden(false)
                 .setIsPageNumber(isPageNumber)
+                .setIsPageSize(isPageSize)
                 .setComment(schema.getDescription())
                 .build());
     }
@@ -520,7 +642,8 @@ public class OpenApiSpec
             JsonPointer resultsPointer,
             Schema<?> schema,
             boolean isNullable,
-            boolean isPageNumber)
+            boolean isPageNumber,
+            boolean isPageSize)
     {
         String name = getIdentifier(sourceName);
         return convertType(schema).map(type -> OpenApiColumn.builder()
@@ -532,6 +655,7 @@ public class OpenApiSpec
                 .setIsNullable(Optional.ofNullable(schema.getNullable()).orElse(isNullable))
                 .setIsHidden(false)
                 .setIsPageNumber(isPageNumber)
+                .setIsPageSize(isPageSize)
                 .setComment(schema.getDescription())
                 .build());
     }
@@ -543,7 +667,8 @@ public class OpenApiSpec
             Map<HttpPath, ParameterLocation> optionalPredicate,
             boolean isNullable,
             boolean isHidden,
-            boolean isPageNumber)
+            boolean isPageNumber,
+            boolean isPageSize)
     {
         String name = getIdentifier(sourceName);
         return convertType(schema).map(type -> OpenApiColumn.builder()
@@ -556,6 +681,7 @@ public class OpenApiSpec
                 .setIsNullable(Optional.ofNullable(schema.getNullable()).orElse(isNullable))
                 .setIsHidden(isHidden)
                 .setIsPageNumber(isPageNumber)
+                .setIsPageSize(isPageSize)
                 .setComment(schema.getDescription())
                 .build());
     }
@@ -570,16 +696,19 @@ public class OpenApiSpec
     private Map<HttpPath, JsonPointer> errorPointers(PathItem pathItem, String path)
     {
         return pathItem.readOperationsMap().entrySet().stream()
-                .filter(entry -> entry.getValue().getExtensions() != null && entry.getValue().getExtensions().containsKey(SPEC_EXTENSION))
+                .filter(entry -> entry.getValue().getExtensions() != null &&
+                        entry.getValue().getExtensions().containsKey(SPEC_EXTENSION))
                 .collect(toImmutableMap(
                         entry -> new HttpPath(entry.getKey(), path),
                         entry -> {
-                            Map<String, String> specExtension = getMapOfStrings(entry.getValue().getExtensions().get(SPEC_EXTENSION));
+                            Map<String, String> specExtension =
+                                    getMapOfStrings(entry.getValue().getExtensions().get(SPEC_EXTENSION));
                             try {
                                 return parseJsonPointer(specExtension.get(ERROR_PATH));
                             }
                             catch (IllegalArgumentException e) {
-                                throw new IllegalArgumentException("Invalid value of %s: %s. %s".formatted(ERROR_PATH, specExtension.get(ERROR_PATH), e.getMessage()));
+                                throw new IllegalArgumentException("Invalid value of %s: %s. %s".formatted(ERROR_PATH,
+                                        specExtension.get(ERROR_PATH), e.getMessage()));
                             }
                         }));
     }
@@ -727,7 +856,7 @@ public class OpenApiSpec
         if (type.equals("int") || type.equals("integer")) {
             return Optional.of(new TypeTuple(INTEGER, property));
         }
-        Schema<?> referenced = openApi.getComponents().getSchemas().get(type);
+        Schema<?> referenced = getOpenApi().openApi().getComponents().getSchemas().get(type);
         if (referenced != null) {
             return convertType(referenced).map(convertedType -> new TypeTuple(convertedType.type(), referenced));
         }
@@ -748,11 +877,13 @@ public class OpenApiSpec
                         .setRequiresPredicate(sameColumns.stream()
                                 .map(OpenApiColumn::getRequiresPredicate)
                                 .flatMap(map -> map.entrySet().stream())
-                                .collect(toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new)))
+                                .collect(
+                                        toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new)))
                         .setOptionalPredicate(sameColumns.stream()
                                 .map(OpenApiColumn::getOptionalPredicate)
                                 .flatMap(map -> map.entrySet().stream())
-                                .collect(toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new)))
+                                .collect(
+                                        toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new)))
                         .build())
                 .collect(groupingBy(OpenApiColumn::getName, LinkedHashMap::new, toList()))
                 .values().stream()
@@ -770,30 +901,26 @@ public class OpenApiSpec
         return new OpenApiTableHandle(
                 SchemaTableName.schemaTableName(SCHEMA_NAME, tableName),
                 // some APIs use POST to query resources
-                tablePaths.containsKey(PathItem.HttpMethod.GET) ? tablePaths.get(PathItem.HttpMethod.GET) : firstNonNull(tablePaths.get(PathItem.HttpMethod.POST), ImmutableList.of()),
+                tablePaths.containsKey(PathItem.HttpMethod.GET) ? tablePaths.get(
+                        PathItem.HttpMethod.GET) : firstNonNull(tablePaths.get(PathItem.HttpMethod.POST),
+                        ImmutableList.of()),
                 tablePaths.containsKey(PathItem.HttpMethod.GET) ? PathItem.HttpMethod.GET : PathItem.HttpMethod.POST,
                 firstNonNull(tablePaths.get(PathItem.HttpMethod.POST), ImmutableList.of()),
                 PathItem.HttpMethod.POST,
                 // some APIs use POST to update resources, or both PUT and POST, with an identifier as a required query parameter or in the body
-                tablePaths.containsKey(PathItem.HttpMethod.PUT) ? tablePaths.get(PathItem.HttpMethod.PUT) : firstNonNull(tablePaths.get(PathItem.HttpMethod.POST), ImmutableList.of()),
+                tablePaths.containsKey(PathItem.HttpMethod.PUT) ? tablePaths.get(
+                        PathItem.HttpMethod.PUT) : firstNonNull(tablePaths.get(PathItem.HttpMethod.POST),
+                        ImmutableList.of()),
                 tablePaths.containsKey(PathItem.HttpMethod.PUT) ? PathItem.HttpMethod.PUT : PathItem.HttpMethod.POST,
                 firstNonNull(tablePaths.get(PathItem.HttpMethod.DELETE), ImmutableList.of()),
                 PathItem.HttpMethod.DELETE,
-                TupleDomain.none());
+                TupleDomain.none(),
+                OptionalLong.empty());
     }
 
-    public Map<String, Map<PathItem.HttpMethod, List<SecurityRequirement>>> getPathSecurityRequirements()
-    {
-        return pathSecurityRequirements;
-    }
-
-    public Map<String, SecurityScheme> getSecuritySchemas()
-    {
-        return securitySchemas;
-    }
-
-    public List<SecurityRequirement> getSecurityRequirements()
-    {
-        return securityRequirements;
-    }
+    private record OpenApiSpecInfo(
+            Map<String, List<OpenApiColumn>> tables,
+            Map<String, OpenApiTableHandle> handles,
+            Map<String, Map<HttpPath, JsonPointer>> errorPointers
+    ) {}
 }

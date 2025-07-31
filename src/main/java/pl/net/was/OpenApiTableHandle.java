@@ -23,6 +23,7 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.LimitApplicationResult;
 import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
@@ -31,6 +32,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.spi.StandardErrorCode.INVALID_ROW_FILTER;
@@ -51,6 +53,7 @@ public class OpenApiTableHandle
     private final List<String> deletePaths;
     private final PathItem.HttpMethod deleteMethod;
     private TupleDomain<ColumnHandle> constraint;
+    private OptionalLong limit;
 
     @JsonCreator
     public OpenApiTableHandle(
@@ -63,7 +66,8 @@ public class OpenApiTableHandle
             PathItem.HttpMethod updateMethod,
             List<String> deletePaths,
             PathItem.HttpMethod deleteMethod,
-            TupleDomain<ColumnHandle> constraint)
+            TupleDomain<ColumnHandle> constraint,
+            OptionalLong limit)
     {
         this.schemaTableName = schemaTableName;
         this.selectPaths = requireNonNull(selectPaths, "selectPaths is null");
@@ -75,6 +79,7 @@ public class OpenApiTableHandle
         this.deletePaths = requireNonNull(deletePaths, "deletePaths is null");
         this.deleteMethod = deleteMethod;
         this.constraint = constraint;
+        this.limit = limit;
     }
 
     @JsonProperty
@@ -137,6 +142,12 @@ public class OpenApiTableHandle
         return constraint;
     }
 
+    @JsonProperty("limit")
+    public OptionalLong getLimit()
+    {
+        return limit;
+    }
+
     @Override
     public String toString()
     {
@@ -176,7 +187,16 @@ public class OpenApiTableHandle
         return tableHandle;
     }
 
-    public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(Constraint constraint, Map<String, OpenApiColumn> columns, int domainExpansionLimit)
+    public OpenApiTableHandle cloneWithBaseFields()
+    {
+        OpenApiTableHandle tableHandle = this.clone();
+        tableHandle.constraint = TupleDomain.none();
+        tableHandle.limit = OptionalLong.empty();
+        return tableHandle;
+    }
+
+    public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(Constraint constraint,
+            Map<String, OpenApiColumn> columns, int domainExpansionLimit)
     {
         TupleDomain<ColumnHandle> summary = constraint.getSummary();
         // the only reason not to use isNone is so the linter doesn't complain about not checking an Optional
@@ -192,7 +212,8 @@ public class OpenApiTableHandle
                 continue;
             }
 
-            TupleDomain<ColumnHandle> newConstraint = normalizeConstraint(column.getHandle(), summary, domainExpansionLimit);
+            TupleDomain<ColumnHandle> newConstraint =
+                    normalizeConstraint(column.getHandle(), summary, domainExpansionLimit);
             if (newConstraint == null || newConstraint.getDomains().isEmpty()) {
                 continue;
             }
@@ -228,7 +249,8 @@ public class OpenApiTableHandle
                 true));
     }
 
-    private TupleDomain<ColumnHandle> normalizeConstraint(OpenApiColumnHandle column, TupleDomain<ColumnHandle> constraint, int domainExpansionLimit)
+    private TupleDomain<ColumnHandle> normalizeConstraint(OpenApiColumnHandle column,
+            TupleDomain<ColumnHandle> constraint, int domainExpansionLimit)
     {
         //noinspection OptionalGetWithoutIsPresent
         Domain domain = constraint.getDomains().get().get(column);
@@ -247,7 +269,8 @@ public class OpenApiTableHandle
                 .orElse(null);
     }
 
-    private boolean validateConstraint(OpenApiColumnHandle column, TupleDomain<ColumnHandle> currentConstraint, TupleDomain<ColumnHandle> newConstraint)
+    private boolean validateConstraint(OpenApiColumnHandle column, TupleDomain<ColumnHandle> currentConstraint,
+            TupleDomain<ColumnHandle> newConstraint)
     {
         if (currentConstraint.getDomains().isEmpty() || !currentConstraint.getDomains().get().containsKey(column)) {
             return true;
@@ -260,6 +283,13 @@ public class OpenApiTableHandle
             return false;
         }
         // can push down only the first predicate against this column
-        throw new TrinoException(INVALID_ROW_FILTER, "Already pushed down a predicate for " + column.getName() + " which only supports a single value");
+        throw new TrinoException(INVALID_ROW_FILTER,
+                "Already pushed down a predicate for " + column.getName() + " which only supports a single value");
+    }
+
+    public LimitApplicationResult<ConnectorTableHandle> applyLimit(long limit)
+    {
+        this.limit = OptionalLong.of(limit);
+        return new LimitApplicationResult<>(this, true, false);
     }
 }

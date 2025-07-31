@@ -54,9 +54,6 @@ import static pl.net.was.authentication.AuthenticationScheme.BEARER;
 public class Authentication
         implements HttpRequestFilter
 {
-    private final Map<String, Map<PathItem.HttpMethod, List<SecurityRequirement>>> pathSecurityRequirements;
-    private final Map<String, SecurityScheme> securitySchemas;
-    private final List<SecurityRequirement> securityRequirements;
     private final String defaultAuthenticationScheme;
     private final AuthenticationType defaultAuthenticationType;
     private final String username;
@@ -66,12 +63,12 @@ public class Authentication
     private final String apiKeyName;
     private final String apiKeyValue;
 
-    private final URI baseUri;
     private final HttpClient httpClient;
     private final String clientId;
     private final String clientSecret;
     private final LoadingCache<String, String> tokens = CacheBuilder.newBuilder()
             .build(CacheLoader.from(this::getToken));
+    private final OpenApiSpec spec;
 
     @Inject
     public Authentication(OpenApiConfig config,
@@ -80,9 +77,6 @@ public class Authentication
     {
         requireNonNull(config, "config is null");
         requireNonNull(spec, "spec is null");
-        this.pathSecurityRequirements = spec.getPathSecurityRequirements();
-        this.securityRequirements = spec.getSecurityRequirements();
-        this.securitySchemas = spec.getSecuritySchemas();
         this.defaultAuthenticationScheme = config.getAuthenticationScheme().toString();
         this.defaultAuthenticationType = config.getAuthenticationType();
         this.username = config.getUsername();
@@ -92,10 +86,11 @@ public class Authentication
         this.apiKeyName = config.getApiKeyName();
         this.apiKeyValue = config.getApiKeyValue();
 
-        this.baseUri = requireNonNull(config.getBaseUri(), "baseUri is null");
+        requireNonNull(config.getBaseUri(), "baseUri is null");
         this.httpClient = requireNonNull(httpClient, "httpClient is null");
         this.clientId = config.getClientId();
         this.clientSecret = config.getClientSecret();
+        this.spec = spec;
     }
 
     @Override
@@ -124,10 +119,12 @@ public class Authentication
     {
         requireNonNull(path, "path is null");
         requireNonNull(method, "method is null");
+        Map<String, Map<PathItem.HttpMethod, List<SecurityRequirement>>> pathSecurityRequirements =
+                spec.getPathSecurityRequirements();
         if (pathSecurityRequirements.containsKey(path) && pathSecurityRequirements.get(path).containsKey(method)) {
             return pathSecurityRequirements.get(path).get(method);
         }
-        return securityRequirements;
+        return spec.getSecurityRequirements();
     }
 
     private void applyAuthFilters(Request.Builder builder, List<SecurityRequirement> requirements, URI uri)
@@ -139,7 +136,7 @@ public class Authentication
         for (SecurityRequirement requirement : requirements) {
             try {
                 requirement.forEach((name, options) -> {
-                    SecurityScheme securitySchema = securitySchemas.get(name);
+                    SecurityScheme securitySchema = spec.getSecuritySchemas().get(name);
                     requireNonNull(securitySchema, "securitySchema is null");
                     switch (securitySchema.getType()) {
                         case APIKEY -> applyApiKeyAuth(builder, uri, securitySchema);
@@ -254,7 +251,7 @@ public class Authentication
                                         getBody("client_credentials", clientId, clientSecret),
                                         UTF_8))
                                 .build(),
-                        createJsonResponseHandler(jsonCodec(Authentication.TokenResponse.class)))
+                        createJsonResponseHandler(jsonCodec(TokenResponse.class)))
                 .accessToken();
     }
 

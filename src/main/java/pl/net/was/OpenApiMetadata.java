@@ -30,6 +30,7 @@ import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTableVersion;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.ConstraintApplicationResult;
+import io.trino.spi.connector.LimitApplicationResult;
 import io.trino.spi.connector.RetryMode;
 import io.trino.spi.connector.RowChangeParadigm;
 import io.trino.spi.connector.SchemaTableName;
@@ -233,5 +234,14 @@ public class OpenApiMetadata
             Collection<Slice> fragments,
             Collection<ComputedStatistics> computedStatistics)
     {
+    }
+
+    @Override
+    public Optional<LimitApplicationResult<ConnectorTableHandle>> applyLimit(ConnectorSession session,
+            ConnectorTableHandle handle,
+            long limit)
+    {
+        OpenApiTableHandle openApiTableHandle = (OpenApiTableHandle) handle;
+        return Optional.ofNullable(openApiTableHandle.applyLimit(limit));
     }
 }
