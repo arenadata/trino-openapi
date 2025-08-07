@@ -53,6 +53,8 @@ import io.trino.spi.type.RowType;
 import io.trino.spi.type.Type;
 import io.trino.spi.type.TypeOperators;
 import pl.net.was.cache.OpenApiCacheEntity;
+import pl.net.was.exception.OpenApiException;
+import pl.net.was.exception.OpenApiParsingException;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -84,6 +86,16 @@ import static java.util.function.Function.identity;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
+import static pl.net.was.OpenApiSpecUtil.ERROR_PATH;
+import static pl.net.was.OpenApiSpecUtil.LEGACY_SPEC_EXTENSION;
+import static pl.net.was.OpenApiSpecUtil.PAGE_SPEC_EXTENSION;
+import static pl.net.was.OpenApiSpecUtil.PAGINATION_PAGE_PARAM;
+import static pl.net.was.OpenApiSpecUtil.PAGINATION_PAGE_SIZE_PARAM;
+import static pl.net.was.OpenApiSpecUtil.PAGINATION_RESULTS_PATH;
+import static pl.net.was.OpenApiSpecUtil.UNWRAP_INCLUDE_ROOT;
+import static pl.net.was.OpenApiSpecUtil.UNWRAP_RESULTS_PATH;
+import static pl.net.was.OpenApiSpecUtil.UNWRAP_SPEC_EXTENSION;
+import static pl.net.was.OpenApiSpecUtil.getMapOfStrings;
 
 public class OpenApiSpec
 {
@@ -93,15 +105,7 @@ public class OpenApiSpec
     public static final String ROW_ID = "__trino_row_id";
     public static final String HTTP_OK = "200";
     public static final String MIME_JSON = "application/json";
-
     private static final TypeTuple FALLBACK_TYPE = new TypeTuple(VARCHAR, new StringSchema());
-
-    private static final String SPEC_EXTENSION = "x-trino";
-    private static final String LEGACY_SPEC_EXTENSION = "x-pagination";
-    private static final String PAGINATION_RESULTS_PATH = "resultsPath";
-    private static final String ERROR_PATH = "errorPath";
-    private static final String PAGINATION_PAGE_PARAM = "pageParam";
-    private static final String PAGINATION_PAGE_SIZE_PARAM = "limitParam";
     private final LoadingCache<String, OpenApiCacheEntity> openApiCache;
     private final OpenApiConfig config;
     private static final Pattern JSON_POINTER_PATTERN = Pattern.compile("\\$response\\.body#(/.*)");
@@ -120,7 +124,7 @@ public class OpenApiSpec
             return getOpenApiCacheEntity();
         }
         catch (Exception e) {
-            log.error("Failed to load OpenAPI specification", e);
+            log.error("%s", e.getMessage(), e);
             return OpenApiCacheEntity.FALLBACK;
         }
     }
@@ -162,9 +166,12 @@ public class OpenApiSpec
 
     private OpenApiCacheEntity getOpenApi()
     {
-        OpenApiCacheEntity entity = openApiCache.getUnchecked(getOpenApiVersion());
+        String openApiVersion = getOpenApiVersion();
+        OpenApiCacheEntity entity = openApiCache.getUnchecked(openApiVersion);
         if (entity.isFallback()) {
-            return getOpenApiCacheEntity();
+            OpenApiCacheEntity afterFallbackEntity = getOpenApiCacheEntity();
+            openApiCache.put(openApiVersion, afterFallbackEntity);
+            return afterFallbackEntity;
         }
         return entity;
     }
@@ -210,7 +217,9 @@ public class OpenApiSpec
                 Map<PathItem.HttpMethod, List<String>> tablePaths =
                         methodsToPaths(firstEntry.getValue(), firstEntry.getKey());
                 errorPointers.put(groupEntry.getKey(), errorPointers(firstEntry.getValue(), firstEntry.getKey()));
-                handles.put(groupEntry.getKey(), tableHandle(groupEntry.getKey(), tablePaths));
+                Map<PathItem.HttpMethod, Map<String, Object>> methodExtensions =
+                        getMethodExtensionsMap(firstEntry.getValue(), firstEntry.getKey());
+                handles.put(groupEntry.getKey(), tableHandle(groupEntry.getKey(), tablePaths, methodExtensions));
                 continue;
             }
             Map.Entry<String, PathItem> baseEntry = groupEntry.getValue().stream()
@@ -219,6 +228,8 @@ public class OpenApiSpec
             List<OpenApiColumn> baseColumns = getColumns(baseEntry.getValue(), baseEntry.getKey());
             Map<PathItem.HttpMethod, List<String>> baseMethods =
                     methodsToPaths(baseEntry.getValue(), baseEntry.getKey());
+            Map<PathItem.HttpMethod, Map<String, Object>> baseMethodExtensions =
+                    getMethodExtensionsMap(baseEntry.getValue(), baseEntry.getKey());
             Map<HttpPath, JsonPointer> baseErrorPointers = errorPointers(baseEntry.getValue(), baseEntry.getKey());
             // treat all combinations of path params as primary keys, which means every path with params is mapped to a separate table,
             // but combine it with columns from the base path
@@ -246,13 +257,20 @@ public class OpenApiSpec
                                         errorPointers(entry.getValue(), entry.getKey()).entrySet().stream())
                                 .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue)));
 
-                        handles.put(tableName, tableHandle(tableName, tablePaths));
+                        handles.put(tableName, tableHandle(tableName, tablePaths, baseMethodExtensions));
                     });
         }
         return new OpenApiSpecInfo(
                 tables.buildOrThrow(),
                 handles.buildOrThrow(),
                 errorPointers.buildOrThrow());
+    }
+
+    private Map<PathItem.HttpMethod, Map<String, Object>> getMethodExtensionsMap(PathItem pathItem, String path)
+    {
+        return pathItem.readOperationsMap().entrySet().stream()
+                .filter(entry -> filterPath(path, entry.getKey()) && entry.getValue().getExtensions() != null)
+                .collect(toImmutableMap(Map.Entry::getKey, entry -> entry.getValue().getExtensions()));
     }
 
     private Map<String, Map<PathItem.HttpMethod, List<SecurityRequirement>>> getPathSecurityRequirements(
@@ -326,8 +344,7 @@ public class OpenApiSpec
         OpenAPI openAPI = result.getOpenAPI();
 
         if (result.getMessages() != null && !result.getMessages().isEmpty()) {
-            throw new IllegalArgumentException(
-                    "Failed to parse the OpenAPI spec: " + String.join(", ", result.getMessages()));
+            throw new OpenApiParsingException(String.join(", ", result.getMessages()));
         }
 
         return openAPI;
@@ -395,126 +412,259 @@ public class OpenApiSpec
         PathItem.HttpMethod method = entry.getKey();
         Operation op = entry.getValue();
         List<OpenApiColumn> result = new ArrayList<>();
-
-        Map<String, String> specExtension = op.getExtensions() == null ?
-                ImmutableMap.of() :
-                getMapOfStrings(firstNonNull(
-                        op.getExtensions().get(SPEC_EXTENSION),
-                        firstNonNull(op.getExtensions().get(LEGACY_SPEC_EXTENSION), ImmutableMap.of())));
-        JsonPointer resultsPointer;
-        try {
-            resultsPointer = parseJsonPointer(specExtension.get(PAGINATION_RESULTS_PATH));
-        }
-        catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("Invalid value of %s: %s. %s".formatted(PAGINATION_RESULTS_PATH,
-                    specExtension.get(PAGINATION_RESULTS_PATH), e.getMessage()));
-        }
-
+        Map<String, String> pageSpecExtension = getPageSpecExtension(op);
+        Map<String, String> unwrapSpecExtension = getUnwrapSpecExtension(op);
+        boolean useUnwrapExtension = !unwrapSpecExtension.isEmpty();
         Schema<?> schema = getResponseSchema(op);
         if (schema != null) {
             List<String> requiredProperties = schema.getRequired() != null ? schema.getRequired() : List.of();
-            getSchemaProperties(schema)
-                    .entrySet().stream()
-                    .filter(propEntry -> !resultsPointer.matchesProperty(propEntry.getKey()))
-                    .map(propEntry -> getResultColumn(
-                            propEntry.getKey(),
-                            propEntry.getValue(),
-                            !requiredProperties.contains(propEntry.getKey()),
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
-                    .filter(Optional::isPresent)
-                    .forEach(column -> result.add(column.get()));
-            getResultsSchema(schema, resultsPointer)
-                    .entrySet().stream()
-                    .map(propEntry -> getResultColumn(
-                            propEntry.getKey(),
-                            resultsPointer,
-                            propEntry.getValue(),
-                            !requiredProperties.contains(propEntry.getKey()),
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
-                    .filter(Optional::isPresent)
-                    .forEach(column -> result.add(column.get()));
+            if (useUnwrapExtension) {
+                initColumnsWithEnabledUnwrapSpecExtension(unwrapSpecExtension,
+                        pageSpecExtension,
+                        schema,
+                        requiredProperties,
+                        result);
+            }
+            else {
+                initColumns(pageSpecExtension, schema, requiredProperties, result);
+            }
         }
         schema = getRequestSchema(op);
         if (schema != null) {
-            ListMultimap<String, OpenApiColumn.PrimaryKey> keys = result.stream()
-                    .collect(ArrayListMultimap::create,
-                            (map, element) -> map.put(element.getName(), element.getPrimaryKey()),
-                            ArrayListMultimap::putAll);
-            List<String> requiredProperties = schema.getRequired() != null ? schema.getRequired() : List.of();
-            getSchemaProperties(schema)
-                    .entrySet().stream()
-                    .map(propEntry -> getPredicateColumn(
-                            propEntry.getKey(),
-                            propEntry.getValue(),
-                            requiredProperties.contains(propEntry.getKey()) ? ImmutableMap.of(
-                                    new HttpPath(method, path), ParameterLocation.BODY) : ImmutableMap.of(),
-                            !requiredProperties.contains(propEntry.getKey()) ? ImmutableMap.of(
-                                    new HttpPath(method, path), ParameterLocation.BODY) : ImmutableMap.of(),
-                            !requiredProperties.contains(propEntry.getKey()),
-                            false,
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
-                            propEntry.getKey().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
-                    .filter(Optional::isPresent)
-                    .map(Optional::get)
-                    .map(column -> {
-                        while (hasAmbiguousName(column, keys)) {
-                            // if the request param is also a response field,
-                            // append `_req` to its name to disambiguate it,
-                            // otherwise it'll get a number suffix, like `_2`
-                            column = OpenApiColumn.builderFrom(column)
-                                    .setName(column.getName() + "_req")
-                                    .build();
-                        }
-                        return column;
-                    })
-                    .forEach(result::add);
+            initColumnsFromRequiredProperties(path, result, schema, method, pageSpecExtension);
         }
         if (op.getParameters() != null && filterPath(path, method)) {
-            ListMultimap<String, OpenApiColumn.PrimaryKey> keys = result.stream()
-                    .collect(ArrayListMultimap::create,
-                            (map, element) -> map.put(element.getName(), element.getPrimaryKey()),
-                            ArrayListMultimap::putAll);
-            // add required parameters as columns, so they can be set as predicates;
-            // predicate values will be saved in the table handle and copied to result rows
-            op.getParameters().stream()
-                    .map(parameter -> {
-                        ParameterLocation parameterLocation =
-                                parameter.getIn() == null ? ParameterLocation.NONE : ParameterLocation.valueOf(
-                                        parameter.getIn().toUpperCase(Locale.ENGLISH));
-                        return getPredicateColumn(
-                                parameter.getName(),
-                                parameter.getSchema(),
-                                parameter.getRequired() ? ImmutableMap.of(new HttpPath(method, path),
-                                        parameterLocation) : ImmutableMap.of(),
-                                !parameter.getRequired() ? ImmutableMap.of(new HttpPath(method, path),
-                                        parameterLocation) : ImmutableMap.of(),
-                                // always nullable, because they're only required as predicates, not in INSERT statements
-                                true,
-                                // keep pagination parameters as hidden columns, so it's possible to
-                                // see the page number (how many requests were made) and change the default per-page limit
-                                specExtension.containsValue(parameter.getName()),
-                                parameter.getName().equals(specExtension.get(PAGINATION_PAGE_PARAM)),
-                                parameter.getName().equals(specExtension.get(PAGINATION_PAGE_SIZE_PARAM)));
-                    })
-                    .filter(Optional::isPresent)
-                    .map(Optional::get)
-                    .map(column -> {
-                        while (hasAmbiguousName(column, keys)) {
-                            // if the request param is also a response field,
-                            // append `_req` to its name to disambiguate it,
-                            // otherwise it'll get a number suffix, like `_2`
-                            column = OpenApiColumn.builderFrom(column)
-                                    .setName(column.getName() + "_req")
-                                    .build();
-                        }
-                        return column;
-                    })
-                    .forEach(result::add);
+            initColumnsFromRequiredParams(path, result, op, method, pageSpecExtension);
         }
-
         return result.stream();
+    }
+
+    private void initColumnsWithEnabledUnwrapSpecExtension(Map<String, String> unwrapSpecExtension,
+            Map<String, String> pageSpecExtension,
+            Schema<?> schema, List<String> requiredProperties, List<OpenApiColumn> result)
+    {
+        JsonPointer resultsPointer = getJsonPointerFromUnwrapSpec(pageSpecExtension, unwrapSpecExtension);
+        boolean includeRootColumns =
+                unwrapSpecExtension.get(UNWRAP_INCLUDE_ROOT) != null && Boolean.parseBoolean(
+                        unwrapSpecExtension.get(UNWRAP_INCLUDE_ROOT));
+        if (includeRootColumns) {
+            JsonPointer parentJsonPointer = getParentJsonPointer(resultsPointer);
+            String tailPropertyName = getJsonPointerTailPropertyName(resultsPointer);
+            getResultsSchema(schema, parentJsonPointer)
+                    .entrySet().stream()
+                    .filter(propEntry -> !tailPropertyName.matches(propEntry.getKey()))
+                    .map(propEntry -> getResultColumn(
+                            propEntry.getKey(),
+                            JsonPointer.compile((parentJsonPointer.getMatchingProperty() ==
+                                    null ? "" : parentJsonPointer.toString()) + "/" + propEntry.getKey()),
+                            propEntry.getValue(),
+                            !requiredProperties.contains(propEntry.getKey()),
+                            propEntry.getKey().equals(pageSpecExtension.get(PAGINATION_PAGE_PARAM)),
+                            propEntry.getKey().equals(pageSpecExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
+                    .filter(Optional::isPresent)
+                    .forEach(column -> result.add(column.get()));
+        }
+        getResultsSchema(schema, resultsPointer)
+                .entrySet().stream()
+                .map(propEntry -> getResultColumn(
+                        propEntry.getKey(),
+                        resultsPointer,
+                        propEntry.getValue(),
+                        !requiredProperties.contains(propEntry.getKey()),
+                        propEntry.getKey().equals(pageSpecExtension.get(PAGINATION_PAGE_PARAM)),
+                        propEntry.getKey().equals(pageSpecExtension.get(PAGINATION_PAGE_SIZE_PARAM)),
+                        true))
+                .filter(Optional::isPresent)
+                .forEach(column -> result.add(column.get()));
+    }
+
+    private void initColumns(Map<String, String> pageSpecExtension,
+            Schema<?> schema,
+            List<String> requiredProperties,
+            List<OpenApiColumn> result)
+    {
+        JsonPointer resultsPointer = getJsonPointerFromPageSpec(pageSpecExtension);
+        getSchemaProperties(schema)
+                .entrySet().stream()
+                .filter(propEntry -> !resultsPointer.matchesProperty(propEntry.getKey()))
+                .map(propEntry -> getResultColumn(
+                        propEntry.getKey(),
+                        propEntry.getValue(),
+                        !requiredProperties.contains(propEntry.getKey()),
+                        propEntry.getKey().equals(pageSpecExtension.get(PAGINATION_PAGE_PARAM)),
+                        propEntry.getKey().equals(pageSpecExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
+                .filter(Optional::isPresent)
+                .forEach(column -> result.add(column.get()));
+        getResultsSchema(schema, resultsPointer)
+                .entrySet().stream()
+                .map(propEntry -> getResultColumn(
+                        propEntry.getKey(),
+                        resultsPointer,
+                        propEntry.getValue(),
+                        !requiredProperties.contains(propEntry.getKey()),
+                        propEntry.getKey().equals(pageSpecExtension.get(PAGINATION_PAGE_PARAM)),
+                        propEntry.getKey().equals(pageSpecExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
+                .filter(Optional::isPresent)
+                .forEach(column -> result.add(column.get()));
+    }
+
+    private void initColumnsFromRequiredProperties(String path,
+            List<OpenApiColumn> result,
+            Schema<?> schema,
+            PathItem.HttpMethod method,
+            Map<String, String> pageSpecExtension)
+    {
+        ListMultimap<String, OpenApiColumn.PrimaryKey> keys = result.stream()
+                .collect(ArrayListMultimap::create,
+                        (map, element) -> map.put(element.getName(), element.getPrimaryKey()),
+                        ArrayListMultimap::putAll);
+        List<String> requiredProperties = schema.getRequired() != null ? schema.getRequired() : List.of();
+        getSchemaProperties(schema)
+                .entrySet().stream()
+                .map(propEntry -> getPredicateColumn(
+                        propEntry.getKey(),
+                        propEntry.getValue(),
+                        requiredProperties.contains(propEntry.getKey()) ? ImmutableMap.of(
+                                new HttpPath(method, path), ParameterLocation.BODY) : ImmutableMap.of(),
+                        !requiredProperties.contains(propEntry.getKey()) ? ImmutableMap.of(
+                                new HttpPath(method, path), ParameterLocation.BODY) : ImmutableMap.of(),
+                        !requiredProperties.contains(propEntry.getKey()),
+                        false,
+                        propEntry.getKey().equals(pageSpecExtension.get(PAGINATION_PAGE_PARAM)),
+                        propEntry.getKey().equals(pageSpecExtension.get(PAGINATION_PAGE_SIZE_PARAM))))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .map(column -> {
+                    while (hasAmbiguousName(column, keys)) {
+                        // if the request param is also a response field,
+                        // append `_req` to its name to disambiguate it,
+                        // otherwise it'll get a number suffix, like `_2`
+                        column = OpenApiColumn.builderFrom(column)
+                                .setName(column.getName() + "_req")
+                                .build();
+                    }
+                    return column;
+                })
+                .forEach(result::add);
+    }
+
+    private void initColumnsFromRequiredParams(String path,
+            List<OpenApiColumn> result,
+            Operation op,
+            PathItem.HttpMethod method,
+            Map<String, String> pageSpecExtension)
+    {
+        ListMultimap<String, OpenApiColumn.PrimaryKey> keys = result.stream()
+                .collect(ArrayListMultimap::create,
+                        (map, element) -> map.put(element.getName(), element.getPrimaryKey()),
+                        ArrayListMultimap::putAll);
+        // add required parameters as columns, so they can be set as predicates;
+        // predicate values will be saved in the table handle and copied to result rows
+        op.getParameters().stream()
+                .map(parameter -> {
+                    ParameterLocation parameterLocation =
+                            parameter.getIn() == null ? ParameterLocation.NONE : ParameterLocation.valueOf(
+                                    parameter.getIn().toUpperCase(Locale.ENGLISH));
+                    return getPredicateColumn(
+                            parameter.getName(),
+                            parameter.getSchema(),
+                            parameter.getRequired() ? ImmutableMap.of(new HttpPath(method, path),
+                                    parameterLocation) : ImmutableMap.of(),
+                            !parameter.getRequired() ? ImmutableMap.of(new HttpPath(method, path),
+                                    parameterLocation) : ImmutableMap.of(),
+                            // always nullable, because they're only required as predicates, not in INSERT statements
+                            true,
+                            // keep pagination parameters as hidden columns, so it's possible to
+                            // see the page number (how many requests were made) and change the default per-page limit
+                            pageSpecExtension.containsValue(parameter.getName()),
+                            parameter.getName().equals(pageSpecExtension.get(PAGINATION_PAGE_PARAM)),
+                            parameter.getName().equals(pageSpecExtension.get(PAGINATION_PAGE_SIZE_PARAM)));
+                })
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .map(column -> {
+                    while (hasAmbiguousName(column, keys)) {
+                        // if the request param is also a response field,
+                        // append `_req` to its name to disambiguate it,
+                        // otherwise it'll get a number suffix, like `_2`
+                        column = OpenApiColumn.builderFrom(column)
+                                .setName(column.getName() + "_req")
+                                .build();
+                    }
+                    return column;
+                })
+                .forEach(result::add);
+    }
+
+    private Map<String, String> getPageSpecExtension(Operation op)
+    {
+        return op.getExtensions() == null ?
+                ImmutableMap.of() :
+                getMapOfStrings(firstNonNull(
+                        op.getExtensions().get(PAGE_SPEC_EXTENSION),
+                        firstNonNull(op.getExtensions().get(LEGACY_SPEC_EXTENSION), ImmutableMap.of())));
+    }
+
+    private Map<String, String> getUnwrapSpecExtension(Operation op)
+    {
+        return op.getExtensions() == null ?
+                ImmutableMap.of() :
+                getMapOfStrings(firstNonNull(
+                        op.getExtensions().get(UNWRAP_SPEC_EXTENSION), ImmutableMap.of()));
+    }
+
+    private JsonPointer getJsonPointerFromUnwrapSpec(Map<String, String> pageSpecExtension,
+            Map<String, String> unwrapSpecExtension)
+    {
+        if (!pageSpecExtension.isEmpty() && !pageSpecExtension.get(PAGINATION_RESULTS_PATH)
+                .equals(unwrapSpecExtension.get(UNWRAP_RESULTS_PATH))) {
+            throw new OpenApiException(
+                    "Invalid value of %s extension %s. It must be the same as %s extension value of %s".formatted(
+                            PAGE_SPEC_EXTENSION,
+                            PAGINATION_RESULTS_PATH,
+                            UNWRAP_SPEC_EXTENSION,
+                            UNWRAP_RESULTS_PATH));
+        }
+        JsonPointer resultsPointer =
+                getResultsJsonPointer(UNWRAP_RESULTS_PATH, unwrapSpecExtension.get(UNWRAP_RESULTS_PATH));
+        if (resultsPointer.head().getMatchingProperty() != null) {
+            //check that unwrapped element is taken from root
+            throw new OpenApiException(
+                    "The unwrap column '%s' can only be from the top-level structure".formatted(
+                            resultsPointer.toString()));
+        }
+        return resultsPointer;
+    }
+
+    private JsonPointer getJsonPointerFromPageSpec(Map<String, String> pageSpecExtension)
+    {
+        return getResultsJsonPointer(PAGINATION_RESULTS_PATH, pageSpecExtension.get(PAGINATION_RESULTS_PATH));
+    }
+
+    private String getJsonPointerTailPropertyName(JsonPointer resultsPointer)
+    {
+        String path = resultsPointer.toString();
+        return path.substring(path.lastIndexOf('/') + 1);
+    }
+
+    private static JsonPointer getResultsJsonPointer(String resultsPathName, String resultsPath)
+    {
+        JsonPointer resultsPointer;
+        try {
+            resultsPointer = parseJsonPointer(resultsPath);
+        }
+        catch (IllegalArgumentException e) {
+            throw new OpenApiException("Invalid value of %s: %s. %s".formatted(resultsPathName,
+                    resultsPath, e.getMessage()));
+        }
+        return resultsPointer;
+    }
+
+    public JsonPointer getParentJsonPointer(JsonPointer pointer)
+    {
+        String path = pointer.toString();
+        String parentPath = path.substring(0, path.lastIndexOf('/'));
+        return JsonPointer.compile(parentPath);
     }
 
     private static JsonPointer parseJsonPointer(String expression)
@@ -531,7 +681,7 @@ public class OpenApiSpec
             return JsonPointer.empty();
         }
         if (expression.startsWith("$")) {
-            throw new IllegalArgumentException(
+            throw new OpenApiException(
                     "Complex JSON pointer or JSON path expressions are not supported");
         }
         if (!expression.startsWith("/")) {
@@ -569,17 +719,6 @@ public class OpenApiSpec
                 .getSchema();
     }
 
-    private static Map<String, String> getMapOfStrings(Object object)
-    {
-        if (!(object instanceof Map<?, ?>)) {
-            return ImmutableMap.of();
-        }
-
-        return ((Map<?, ?>) object).entrySet().stream()
-                .filter(entry -> entry.getKey() instanceof String && entry.getValue() instanceof String)
-                .collect(toImmutableMap(entry -> (String) entry.getKey(), entry -> (String) entry.getValue()));
-    }
-
     private static Map<String, Schema> getSchemaProperties(Schema<?> schema)
     {
         Map<String, Schema> properties;
@@ -601,9 +740,7 @@ public class OpenApiSpec
             String name = resultsPointer.getMatchingProperty();
             schema = getSchemaProperties(schema).get(name);
             if (schema == null) {
-                throw new IllegalArgumentException(
-                        "Invalid value of %s: unknown field %s".formatted(JSON_POINTER_PATTERN,
-                                resultsPointer));
+                throw new OpenApiException("Column %s not found".formatted(name));
             }
             // TODO validate that the schema is an array?
             resultsPointer = resultsPointer.tail();
@@ -633,6 +770,7 @@ public class OpenApiSpec
                 .setIsHidden(false)
                 .setIsPageNumber(isPageNumber)
                 .setIsPageSize(isPageSize)
+                .setIsUnwrapped(false)
                 .setComment(schema.getDescription())
                 .build());
     }
@@ -645,6 +783,24 @@ public class OpenApiSpec
             boolean isPageNumber,
             boolean isPageSize)
     {
+        return getResultColumn(sourceName,
+                resultsPointer,
+                schema,
+                isNullable,
+                isPageNumber,
+                isPageSize,
+                false);
+    }
+
+    private Optional<OpenApiColumn> getResultColumn(
+            String sourceName,
+            JsonPointer resultsPointer,
+            Schema<?> schema,
+            boolean isNullable,
+            boolean isPageNumber,
+            boolean isPageSize,
+            boolean isUnwrapped)
+    {
         String name = getIdentifier(sourceName);
         return convertType(schema).map(type -> OpenApiColumn.builder()
                 .setName(name)
@@ -656,6 +812,7 @@ public class OpenApiSpec
                 .setIsHidden(false)
                 .setIsPageNumber(isPageNumber)
                 .setIsPageSize(isPageSize)
+                .setIsUnwrapped(isUnwrapped)
                 .setComment(schema.getDescription())
                 .build());
     }
@@ -697,17 +854,17 @@ public class OpenApiSpec
     {
         return pathItem.readOperationsMap().entrySet().stream()
                 .filter(entry -> entry.getValue().getExtensions() != null &&
-                        entry.getValue().getExtensions().containsKey(SPEC_EXTENSION))
+                        entry.getValue().getExtensions().containsKey(PAGE_SPEC_EXTENSION))
                 .collect(toImmutableMap(
                         entry -> new HttpPath(entry.getKey(), path),
                         entry -> {
                             Map<String, String> specExtension =
-                                    getMapOfStrings(entry.getValue().getExtensions().get(SPEC_EXTENSION));
+                                    getMapOfStrings(entry.getValue().getExtensions().get(PAGE_SPEC_EXTENSION));
                             try {
                                 return parseJsonPointer(specExtension.get(ERROR_PATH));
                             }
                             catch (IllegalArgumentException e) {
-                                throw new IllegalArgumentException("Invalid value of %s: %s. %s".formatted(ERROR_PATH,
+                                throw new OpenApiException("Invalid value of %s: %s. %s".formatted(ERROR_PATH,
                                         specExtension.get(ERROR_PATH), e.getMessage()));
                             }
                         }));
@@ -896,7 +1053,9 @@ public class OpenApiSpec
                 .toList();
     }
 
-    private static OpenApiTableHandle tableHandle(String tableName, Map<PathItem.HttpMethod, List<String>> tablePaths)
+    private static OpenApiTableHandle tableHandle(String tableName,
+            Map<PathItem.HttpMethod, List<String>> tablePaths,
+            Map<PathItem.HttpMethod, Map<String, Object>> methodExtensions)
     {
         return new OpenApiTableHandle(
                 SchemaTableName.schemaTableName(SCHEMA_NAME, tableName),
@@ -914,6 +1073,7 @@ public class OpenApiSpec
                 tablePaths.containsKey(PathItem.HttpMethod.PUT) ? PathItem.HttpMethod.PUT : PathItem.HttpMethod.POST,
                 firstNonNull(tablePaths.get(PathItem.HttpMethod.DELETE), ImmutableList.of()),
                 PathItem.HttpMethod.DELETE,
+                methodExtensions,
                 TupleDomain.none(),
                 OptionalLong.empty());
     }
