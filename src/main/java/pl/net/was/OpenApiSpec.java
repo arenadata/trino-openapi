@@ -92,10 +92,10 @@ import static pl.net.was.OpenApiSpecUtil.PAGE_SPEC_EXTENSION;
 import static pl.net.was.OpenApiSpecUtil.PAGINATION_PAGE_PARAM;
 import static pl.net.was.OpenApiSpecUtil.PAGINATION_PAGE_SIZE_PARAM;
 import static pl.net.was.OpenApiSpecUtil.PAGINATION_RESULTS_PATH;
-import static pl.net.was.OpenApiSpecUtil.UNWRAP_INCLUDE_ROOT;
 import static pl.net.was.OpenApiSpecUtil.UNWRAP_RESULTS_PATH;
 import static pl.net.was.OpenApiSpecUtil.UNWRAP_SPEC_EXTENSION;
 import static pl.net.was.OpenApiSpecUtil.getMapOfStrings;
+import static pl.net.was.OpenApiSpecUtil.isUseUnwrapWithRootNodes;
 
 public class OpenApiSpec
 {
@@ -444,9 +444,7 @@ public class OpenApiSpec
             Schema<?> schema, List<String> requiredProperties, List<OpenApiColumn> result)
     {
         JsonPointer resultsPointer = getJsonPointerFromUnwrapSpec(pageSpecExtension, unwrapSpecExtension);
-        boolean includeRootColumns =
-                unwrapSpecExtension.get(UNWRAP_INCLUDE_ROOT) != null && Boolean.parseBoolean(
-                        unwrapSpecExtension.get(UNWRAP_INCLUDE_ROOT));
+        boolean includeRootColumns = isUseUnwrapWithRootNodes(unwrapSpecExtension);
         if (includeRootColumns) {
             JsonPointer parentJsonPointer = getParentJsonPointer(resultsPointer);
             String tailPropertyName = getJsonPointerTailPropertyName(resultsPointer);

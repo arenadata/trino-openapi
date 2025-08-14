@@ -14,6 +14,7 @@
 package pl.net.was;
 
 import com.google.common.collect.ImmutableMap;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.Map;
 
@@ -44,5 +45,17 @@ public final class OpenApiSpecUtil
         return ((Map<?, ?>) object).entrySet().stream()
                 .filter(entry -> entry.getKey() instanceof String && entry.getValue() instanceof String)
                 .collect(toImmutableMap(entry -> (String) entry.getKey(), entry -> (String) entry.getValue()));
+    }
+
+    public static boolean isUseUnwrapWithRootNodes(@NotNull Map<String, String> unwrapSpecExtension)
+    {
+        if (unwrapSpecExtension.isEmpty()) {
+            return false;
+        }
+        boolean includeRootColumns = true;
+        if (unwrapSpecExtension.get(UNWRAP_INCLUDE_ROOT) != null) {
+            includeRootColumns = Boolean.parseBoolean(unwrapSpecExtension.get(UNWRAP_INCLUDE_ROOT));
+        }
+        return includeRootColumns;
     }
 }

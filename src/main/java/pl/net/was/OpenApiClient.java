@@ -97,9 +97,9 @@ import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.toMap;
 import static pl.net.was.OpenApiSpec.ROW_ID;
-import static pl.net.was.OpenApiSpecUtil.UNWRAP_INCLUDE_ROOT;
 import static pl.net.was.OpenApiSpecUtil.UNWRAP_SPEC_EXTENSION;
 import static pl.net.was.OpenApiSpecUtil.getMapOfStrings;
+import static pl.net.was.OpenApiSpecUtil.isUseUnwrapWithRootNodes;
 
 public class OpenApiClient
 {
@@ -715,8 +715,7 @@ public class OpenApiClient
         Map<String, String> unwrapSpecExtension = getMapOfStrings(extensions == null ?
                 ImmutableMap.of() : firstNonNull(extensions.get(UNWRAP_SPEC_EXTENSION),
                 ImmutableMap.of()));
-        boolean isUseUnwrapWithRootNodes = !unwrapSpecExtension.isEmpty()
-                && Boolean.parseBoolean(unwrapSpecExtension.get(UNWRAP_INCLUDE_ROOT));
+        boolean isUseUnwrapWithRootNodes = isUseUnwrapWithRootNodes(unwrapSpecExtension);
         List<OpenApiColumn> columns = openApiSpec.getTables().get(table.getSchemaTableName().getTableName());
         Iterable<JsonNode> resultNodes;
         if (isUseUnwrapWithRootNodes) {
