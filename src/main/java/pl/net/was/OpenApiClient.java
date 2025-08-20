@@ -19,6 +19,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.NullNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.util.RawValue;
 import com.google.common.collect.ImmutableList;
@@ -65,6 +66,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -73,6 +75,7 @@ import java.util.function.IntFunction;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.net.HttpHeaders.ACCEPT;
@@ -94,6 +97,9 @@ import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.groupingBy;
 import static java.util.stream.Collectors.toMap;
 import static pl.net.was.OpenApiSpec.ROW_ID;
+import static pl.net.was.OpenApiSpecUtil.UNWRAP_SPEC_EXTENSION;
+import static pl.net.was.OpenApiSpecUtil.getMapOfStrings;
+import static pl.net.was.OpenApiSpecUtil.isUseUnwrapWithRootNodes;
 
 public class OpenApiClient
 {
@@ -677,7 +683,9 @@ public class OpenApiClient
         throw new TrinoException(GENERIC_INTERNAL_ERROR, message, new IllegalArgumentException(result));
     }
 
-    private Iterable<List<?>> convertJson(OpenApiTableHandle table, HttpPath httpPath, JsonNode jsonNode)
+    private Iterable<List<?>> convertJson(OpenApiTableHandle table,
+            HttpPath httpPath,
+            JsonNode jsonNode)
     {
         ImmutableList.Builder<List<?>> resultRecordsBuilder = ImmutableList.builder();
 
@@ -695,32 +703,36 @@ public class OpenApiClient
         return resultRecordsBuilder.build();
     }
 
-    private Iterable<List<?>> convertJsonToRecords(OpenApiTableHandle table, HttpPath httpPath,
-            Map<String, Object> params, JsonNode jsonNode)
+    private Iterable<List<?>> convertJsonToRecords(OpenApiTableHandle table,
+            HttpPath httpPath,
+            Map<String, Object> params,
+            JsonNode jsonNode)
     {
         if (!jsonNode.isObject()) {
             throw new TrinoException(GENERIC_INTERNAL_ERROR, format("JsonNode is not an object: %s", jsonNode));
         }
-
-        Iterable<JsonNode> resultNodes = List.of(jsonNode);
+        Map<String, Object> extensions = table.getMethodExtensions().get(httpPath.method());
+        Map<String, String> unwrapSpecExtension = getMapOfStrings(extensions == null ?
+                ImmutableMap.of() : firstNonNull(extensions.get(UNWRAP_SPEC_EXTENSION),
+                ImmutableMap.of()));
+        boolean isUseUnwrapWithRootNodes = isUseUnwrapWithRootNodes(unwrapSpecExtension);
         List<OpenApiColumn> columns = openApiSpec.getTables().get(table.getSchemaTableName().getTableName());
-        Optional<JsonPointer> resultsPointer = columns.stream()
-                .map(OpenApiColumn::getResultsPointer)
-                .filter(pointer -> pointer != null && pointer.length() != 0)
-                .reduce((a, b) -> {
-                    if (!a.equals(b)) {
-                        throw new IllegalStateException("More than one results pointer found");
-                    }
-                    return a;
-                });
-        if (resultsPointer.isPresent()) {
-            JsonNode resultNode = jsonNode.at(resultsPointer.get());
-            if (!(resultNode instanceof ArrayNode)) {
-                throw new IllegalArgumentException("Result path points to a node that's not an array");
-            }
-            resultNodes = jsonNode.at(resultsPointer.get());
+        Iterable<JsonNode> resultNodes;
+        if (isUseUnwrapWithRootNodes) {
+            resultNodes = getUnwrappedResultWithRootNodes(jsonNode, columns);
         }
+        else {
+            resultNodes = getResultJsonNodes(jsonNode, columns);
+        }
+        return createResultRecords(httpPath, params, jsonNode, resultNodes, columns);
+    }
 
+    private ImmutableList<List<?>> createResultRecords(HttpPath httpPath,
+            Map<String, Object> params,
+            JsonNode jsonNode,
+            Iterable<JsonNode> resultNodes,
+            List<OpenApiColumn> columns)
+    {
         ImmutableList.Builder<List<?>> resultRecordsBuilder = ImmutableList.builder();
         for (JsonNode resultNode : resultNodes) {
             List<Object> recordBuilder = new ArrayList<>();
@@ -760,8 +772,87 @@ public class OpenApiClient
             }
             resultRecordsBuilder.add(recordBuilder);
         }
-
         return resultRecordsBuilder.build();
+    }
+
+    private Iterable<JsonNode> getUnwrappedResultWithRootNodes(JsonNode jsonNode, List<OpenApiColumn> columns)
+    {
+        Iterable<JsonNode> resultNodes;
+        ArrayNode resultArrayNode = OBJECT_MAPPER.createArrayNode();
+        Map<JsonPointer, List<OpenApiColumn>> pointerMap = new LinkedHashMap<>();
+        for (OpenApiColumn column : columns) {
+            JsonPointer pointer = column.getResultsPointer();
+            if (pointer == null) {
+                continue;
+            }
+            pointerMap.computeIfAbsent(pointer, k -> new ArrayList<>()).add(column);
+        }
+        List<WrapJsonNode> nodes = new ArrayList<>();
+        ArrayNode unwrappedNode = null;
+        for (Map.Entry<JsonPointer, List<OpenApiColumn>> entry : pointerMap.entrySet()) {
+            JsonNode node = jsonNode.at(entry.getKey());
+            if (entry.getValue().stream().anyMatch(OpenApiColumn::isUnwrapped)) {
+                if (node instanceof ArrayNode arrayNode) {
+                    unwrappedNode = arrayNode;
+                    nodes.add(new WrapJsonNode(node, true));
+                }
+                else if (node instanceof NullNode) {
+                    break;
+                }
+                else {
+                    throw new IllegalArgumentException(
+                            format("Payload column can only be a column of type an array, actual: %s", node));
+                }
+            }
+            else {
+                //assumed that there is no any other unwrapped objects
+                // and we have only separate columns with unique jsonPointers
+                if (entry.getValue().size() == 1) {
+                    OpenApiColumn column = entry.getValue().stream().findFirst().get();
+                    nodes.add(new WrapJsonNode(node, column.getSourceName()));
+                }
+            }
+        }
+        if (unwrappedNode != null) {
+            //create new jsonNode with root and unwrapped nodes
+            for (JsonNode node : unwrappedNode) {
+                ObjectNode resNode = OBJECT_MAPPER.createObjectNode();
+                nodes.forEach(n -> {
+                    if (n.isUnwrappedNode()) {
+                        resNode.setAll((ObjectNode) node);
+                    }
+                    else {
+                        resNode.set(n.getColumnName(), n.getJsonNode());
+                    }
+                });
+                resultArrayNode.add(resNode);
+            }
+        }
+        resultNodes = resultArrayNode;
+        return resultNodes;
+    }
+
+    private Iterable<JsonNode> getResultJsonNodes(JsonNode jsonNode, List<OpenApiColumn> columns)
+    {
+        Iterable<JsonNode> resultNodes;
+        resultNodes = List.of(jsonNode);
+        Optional<JsonPointer> resultsPointer = columns.stream()
+                .map(OpenApiColumn::getResultsPointer)
+                .filter(pointer -> pointer != null && pointer.length() != 0)
+                .reduce((a, b) -> {
+                    if (!a.equals(b)) {
+                        throw new IllegalStateException("More than one results pointer found");
+                    }
+                    return a;
+                });
+        if (resultsPointer.isPresent()) {
+            JsonNode resultNode = jsonNode.at(resultsPointer.get());
+            if (!(resultNode instanceof ArrayNode)) {
+                throw new IllegalArgumentException("Result path points to a node that's not an array");
+            }
+            resultNodes = jsonNode.at(resultsPointer.get());
+        }
+        return resultNodes;
     }
 
     private byte[] toBytes(JsonNode rootNode)
@@ -842,5 +933,39 @@ public class OpenApiClient
                 return rows.next();
             }
         };
+    }
+
+    private static class WrapJsonNode
+    {
+        private final JsonNode jsonNode;
+        private boolean isUnwrappedNode;
+        private String columnName;
+
+        private WrapJsonNode(JsonNode jsonNode, String columnName)
+        {
+            this.jsonNode = jsonNode;
+            this.columnName = columnName;
+        }
+
+        public WrapJsonNode(JsonNode jsonNode, boolean isUnwrappedNode)
+        {
+            this.jsonNode = jsonNode;
+            this.isUnwrappedNode = isUnwrappedNode;
+        }
+
+        public JsonNode getJsonNode()
+        {
+            return jsonNode;
+        }
+
+        public boolean isUnwrappedNode()
+        {
+            return isUnwrappedNode;
+        }
+
+        public String getColumnName()
+        {
+            return columnName;
+        }
     }
 }

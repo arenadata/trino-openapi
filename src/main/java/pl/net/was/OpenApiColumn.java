@@ -40,6 +40,7 @@ public class OpenApiColumn
     private final ColumnMetadata metadata;
     private final boolean isPageNumber;
     private final boolean isPageSize;
+    private final boolean isUnwrapped;
     private final OpenApiColumnHandle handle;
 
     private OpenApiColumn(
@@ -54,6 +55,7 @@ public class OpenApiColumn
             boolean isHidden,
             boolean isPageNumber,
             boolean isPageSize,
+            boolean isUnwrapped,
             String comment)
     {
         this.name = name;
@@ -72,6 +74,7 @@ public class OpenApiColumn
                 .build();
         this.isPageNumber = isPageNumber;
         this.isPageSize = isPageSize;
+        this.isUnwrapped = isUnwrapped;
         this.handle = new OpenApiColumnHandle(name, type);
     }
 
@@ -123,6 +126,11 @@ public class OpenApiColumn
     public boolean isPageSize()
     {
         return isPageSize;
+    }
+
+    public boolean isUnwrapped()
+    {
+        return isUnwrapped;
     }
 
     public OpenApiColumnHandle getHandle()
@@ -201,6 +209,7 @@ public class OpenApiColumn
         private boolean isHidden;
         private boolean isPageNumber;
         private boolean isPageSize;
+        private boolean isUnwrapped;
         private String comment;
 
         private Builder() {}
@@ -218,6 +227,7 @@ public class OpenApiColumn
             this.isHidden = handle.getMetadata().isHidden();
             this.isPageNumber = handle.isPageNumber();
             this.isPageSize = handle.isPageSize();
+            this.isUnwrapped = handle.isUnwrapped();
             this.comment = handle.getMetadata().getComment();
         }
 
@@ -287,6 +297,12 @@ public class OpenApiColumn
             return this;
         }
 
+        public OpenApiColumn.Builder setIsUnwrapped(boolean isUnwrapped)
+        {
+            this.isUnwrapped = isUnwrapped;
+            return this;
+        }
+
         public OpenApiColumn.Builder setComment(String name)
         {
             if (name != null) {
@@ -309,6 +325,7 @@ public class OpenApiColumn
                     isHidden,
                     isPageNumber,
                     isPageSize,
+                    isUnwrapped,
                     comment);
         }
     }

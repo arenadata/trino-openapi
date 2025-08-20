@@ -52,6 +52,7 @@ public class OpenApiTableHandle
     private final PathItem.HttpMethod updateMethod;
     private final List<String> deletePaths;
     private final PathItem.HttpMethod deleteMethod;
+    private final Map<PathItem.HttpMethod, Map<String, Object>> methodExtensions;
     private TupleDomain<ColumnHandle> constraint;
     private OptionalLong limit;
 
@@ -66,6 +67,7 @@ public class OpenApiTableHandle
             PathItem.HttpMethod updateMethod,
             List<String> deletePaths,
             PathItem.HttpMethod deleteMethod,
+            Map<PathItem.HttpMethod, Map<String, Object>> methodExtensions,
             TupleDomain<ColumnHandle> constraint,
             OptionalLong limit)
     {
@@ -78,6 +80,7 @@ public class OpenApiTableHandle
         this.updateMethod = updateMethod;
         this.deletePaths = requireNonNull(deletePaths, "deletePaths is null");
         this.deleteMethod = deleteMethod;
+        this.methodExtensions = methodExtensions;
         this.constraint = constraint;
         this.limit = limit;
     }
@@ -136,6 +139,12 @@ public class OpenApiTableHandle
         return deleteMethod;
     }
 
+    @JsonProperty
+    public Map<PathItem.HttpMethod, Map<String, Object>> getMethodExtensions()
+    {
+        return methodExtensions;
+    }
+
     @JsonProperty("constraint")
     public TupleDomain<ColumnHandle> getConstraint()
     {
@@ -166,6 +175,7 @@ public class OpenApiTableHandle
                 + SizeOf.estimatedSizeOf(insertMethod.toString())
                 + SizeOf.estimatedSizeOf(updateMethod.toString())
                 + SizeOf.estimatedSizeOf(deleteMethod.toString())
+                + SizeOf.estimatedSizeOf(methodExtensions, SizeOf.STRING_INSTANCE_SIZE, SizeOf.LONG_INSTANCE_SIZE)
                 + constraint.getRetainedSizeInBytes(column -> ((OpenApiColumnHandle) column).getRetainedSizeInBytes());
     }
 
