@@ -213,7 +213,7 @@ public class OpenApiSpec
                 Map.Entry<String, PathItem> firstEntry = groupEntry.getValue().getFirst();
                 tables.put(Map.entry(
                         groupEntry.getKey(),
-                        mergeColumns(getColumns(pathItems.getFirst(), firstEntry.getKey()))));
+                        mergeColumns(getColumns(openApi, pathItems.getFirst(), firstEntry.getKey()))));
                 Map<PathItem.HttpMethod, List<String>> tablePaths =
                         methodsToPaths(firstEntry.getValue(), firstEntry.getKey());
                 errorPointers.put(groupEntry.getKey(), errorPointers(firstEntry.getValue(), firstEntry.getKey()));
@@ -225,7 +225,7 @@ public class OpenApiSpec
             Map.Entry<String, PathItem> baseEntry = groupEntry.getValue().stream()
                     .min(comparingInt(entry -> entry.getKey().length()))
                     .orElseThrow();
-            List<OpenApiColumn> baseColumns = getColumns(baseEntry.getValue(), baseEntry.getKey());
+            List<OpenApiColumn> baseColumns = getColumns(openApi, baseEntry.getValue(), baseEntry.getKey());
             Map<PathItem.HttpMethod, List<String>> baseMethods =
                     methodsToPaths(baseEntry.getValue(), baseEntry.getKey());
             Map<PathItem.HttpMethod, Map<String, Object>> baseMethodExtensions =
@@ -241,7 +241,7 @@ public class OpenApiSpec
                                 tableName,
                                 mergeColumns(Stream.concat(
                                                 baseColumns.stream(),
-                                                getColumns(entry.getValue(), entry.getKey()).stream())
+                                                getColumns(openApi, entry.getValue(), entry.getKey()).stream())
                                         .distinct()
                                         .toList()));
                         Map<PathItem.HttpMethod, List<String>> tablePaths = Stream.concat(
@@ -387,10 +387,10 @@ public class OpenApiSpec
         return result;
     }
 
-    private List<OpenApiColumn> getColumns(PathItem pathItem, String path)
+    private List<OpenApiColumn> getColumns(OpenAPI openApi, PathItem pathItem, String path)
     {
         Stream<OpenApiColumn> columns = pathItem.readOperationsMap().entrySet().stream()
-                .flatMap(entry -> getColumn(path, entry))
+                .flatMap(entry -> getColumn(openApi, path, entry))
                 .distinct();
         if (pathItem.getPost() != null || pathItem.getPut() != null || pathItem.getDelete() != null) {
             // the ROW_ID column is required for MERGE operation, including UPDATE and DELETE
@@ -407,7 +407,7 @@ public class OpenApiSpec
         return columns.toList();
     }
 
-    private Stream<OpenApiColumn> getColumn(String path, Map.Entry<PathItem.HttpMethod, Operation> entry)
+    private Stream<OpenApiColumn> getColumn(OpenAPI openApi, String path, Map.Entry<PathItem.HttpMethod, Operation> entry)
     {
         PathItem.HttpMethod method = entry.getKey();
         Operation op = entry.getValue();
@@ -419,27 +419,29 @@ public class OpenApiSpec
         if (schema != null) {
             List<String> requiredProperties = schema.getRequired() != null ? schema.getRequired() : List.of();
             if (useUnwrapExtension) {
-                initColumnsWithEnabledUnwrapSpecExtension(unwrapSpecExtension,
+                initColumnsWithEnabledUnwrapSpecExtension(openApi,
+                        unwrapSpecExtension,
                         pageSpecExtension,
                         schema,
                         requiredProperties,
                         result);
             }
             else {
-                initColumns(pageSpecExtension, schema, requiredProperties, result);
+                initColumns(openApi, pageSpecExtension, schema, requiredProperties, result);
             }
         }
         schema = getRequestSchema(op);
         if (schema != null) {
-            initColumnsFromRequiredProperties(path, result, schema, method, pageSpecExtension);
+            initColumnsFromRequiredProperties(openApi, path, result, schema, method, pageSpecExtension);
         }
         if (op.getParameters() != null && filterPath(path, method)) {
-            initColumnsFromRequiredParams(path, result, op, method, pageSpecExtension);
+            initColumnsFromRequiredParams(openApi, path, result, op, method, pageSpecExtension);
         }
         return result.stream();
     }
 
-    private void initColumnsWithEnabledUnwrapSpecExtension(Map<String, String> unwrapSpecExtension,
+    private void initColumnsWithEnabledUnwrapSpecExtension(OpenAPI openApi,
+            Map<String, String> unwrapSpecExtension,
             Map<String, String> pageSpecExtension,
             Schema<?> schema, List<String> requiredProperties, List<OpenApiColumn> result)
     {
@@ -451,7 +453,7 @@ public class OpenApiSpec
             getResultsSchema(schema, parentJsonPointer)
                     .entrySet().stream()
                     .filter(propEntry -> !tailPropertyName.matches(propEntry.getKey()))
-                    .map(propEntry -> getResultColumn(
+                    .map(propEntry -> getResultColumn(openApi,
                             propEntry.getKey(),
                             JsonPointer.compile((parentJsonPointer.getMatchingProperty() ==
                                     null ? "" : parentJsonPointer.toString()) + "/" + propEntry.getKey()),
@@ -464,7 +466,7 @@ public class OpenApiSpec
         }
         getResultsSchema(schema, resultsPointer)
                 .entrySet().stream()
-                .map(propEntry -> getResultColumn(
+                .map(propEntry -> getResultColumn(openApi,
                         propEntry.getKey(),
                         resultsPointer,
                         propEntry.getValue(),
@@ -476,7 +478,8 @@ public class OpenApiSpec
                 .forEach(column -> result.add(column.get()));
     }
 
-    private void initColumns(Map<String, String> pageSpecExtension,
+    private void initColumns(OpenAPI openApi,
+            Map<String, String> pageSpecExtension,
             Schema<?> schema,
             List<String> requiredProperties,
             List<OpenApiColumn> result)
@@ -485,7 +488,7 @@ public class OpenApiSpec
         getSchemaProperties(schema)
                 .entrySet().stream()
                 .filter(propEntry -> !resultsPointer.matchesProperty(propEntry.getKey()))
-                .map(propEntry -> getResultColumn(
+                .map(propEntry -> getResultColumn(openApi,
                         propEntry.getKey(),
                         propEntry.getValue(),
                         !requiredProperties.contains(propEntry.getKey()),
@@ -495,7 +498,7 @@ public class OpenApiSpec
                 .forEach(column -> result.add(column.get()));
         getResultsSchema(schema, resultsPointer)
                 .entrySet().stream()
-                .map(propEntry -> getResultColumn(
+                .map(propEntry -> getResultColumn(openApi,
                         propEntry.getKey(),
                         resultsPointer,
                         propEntry.getValue(),
@@ -506,7 +509,9 @@ public class OpenApiSpec
                 .forEach(column -> result.add(column.get()));
     }
 
-    private void initColumnsFromRequiredProperties(String path,
+    private void initColumnsFromRequiredProperties(
+            OpenAPI openApi,
+            String path,
             List<OpenApiColumn> result,
             Schema<?> schema,
             PathItem.HttpMethod method,
@@ -519,7 +524,7 @@ public class OpenApiSpec
         List<String> requiredProperties = schema.getRequired() != null ? schema.getRequired() : List.of();
         getSchemaProperties(schema)
                 .entrySet().stream()
-                .map(propEntry -> getPredicateColumn(
+                .map(propEntry -> getPredicateColumn(openApi,
                         propEntry.getKey(),
                         propEntry.getValue(),
                         requiredProperties.contains(propEntry.getKey()) ? ImmutableMap.of(
@@ -546,7 +551,8 @@ public class OpenApiSpec
                 .forEach(result::add);
     }
 
-    private void initColumnsFromRequiredParams(String path,
+    private void initColumnsFromRequiredParams(OpenAPI openApi,
+            String path,
             List<OpenApiColumn> result,
             Operation op,
             PathItem.HttpMethod method,
@@ -563,7 +569,7 @@ public class OpenApiSpec
                     ParameterLocation parameterLocation =
                             parameter.getIn() == null ? ParameterLocation.NONE : ParameterLocation.valueOf(
                                     parameter.getIn().toUpperCase(Locale.ENGLISH));
-                    return getPredicateColumn(
+                    return getPredicateColumn(openApi,
                             parameter.getName(),
                             parameter.getSchema(),
                             parameter.getRequired() ? ImmutableMap.of(new HttpPath(method, path),
@@ -752,6 +758,7 @@ public class OpenApiSpec
     }
 
     private Optional<OpenApiColumn> getResultColumn(
+            OpenAPI openApi,
             String sourceName,
             Schema<?> schema,
             boolean isNullable,
@@ -759,7 +766,7 @@ public class OpenApiSpec
             boolean isPageSize)
     {
         String name = getIdentifier(sourceName);
-        return convertType(schema).map(type -> OpenApiColumn.builder()
+        return convertType(openApi, schema).map(type -> OpenApiColumn.builder()
                 .setName(name)
                 .setSourceName(sourceName)
                 .setType(type.type())
@@ -774,6 +781,7 @@ public class OpenApiSpec
     }
 
     private Optional<OpenApiColumn> getResultColumn(
+            OpenAPI openApi,
             String sourceName,
             JsonPointer resultsPointer,
             Schema<?> schema,
@@ -781,7 +789,9 @@ public class OpenApiSpec
             boolean isPageNumber,
             boolean isPageSize)
     {
-        return getResultColumn(sourceName,
+        return getResultColumn(
+                openApi,
+                sourceName,
                 resultsPointer,
                 schema,
                 isNullable,
@@ -791,6 +801,7 @@ public class OpenApiSpec
     }
 
     private Optional<OpenApiColumn> getResultColumn(
+            OpenAPI openApi,
             String sourceName,
             JsonPointer resultsPointer,
             Schema<?> schema,
@@ -800,7 +811,7 @@ public class OpenApiSpec
             boolean isUnwrapped)
     {
         String name = getIdentifier(sourceName);
-        return convertType(schema).map(type -> OpenApiColumn.builder()
+        return convertType(openApi, schema).map(type -> OpenApiColumn.builder()
                 .setName(name)
                 .setSourceName(sourceName)
                 .setResultsPointer(resultsPointer)
@@ -816,6 +827,7 @@ public class OpenApiSpec
     }
 
     private Optional<OpenApiColumn> getPredicateColumn(
+            OpenAPI openApi,
             String sourceName,
             Schema<?> schema,
             Map<HttpPath, ParameterLocation> requiredPredicate,
@@ -826,7 +838,7 @@ public class OpenApiSpec
             boolean isPageSize)
     {
         String name = getIdentifier(sourceName);
-        return convertType(schema).map(type -> OpenApiColumn.builder()
+        return convertType(openApi, schema).map(type -> OpenApiColumn.builder()
                 .setName(name)
                 .setSourceName(sourceName)
                 .setType(type.type())
@@ -886,7 +898,7 @@ public class OpenApiSpec
                         .replace('-', '_'));
     }
 
-    private Optional<TypeTuple> convertType(Schema<?> property)
+    private Optional<TypeTuple> convertType(OpenAPI openApi, Schema<?> property)
     {
         if (property.getOneOf() != null
                 || property.getAnyOf() != null
@@ -896,12 +908,12 @@ public class OpenApiSpec
             return Optional.of(new TypeTuple(VARCHAR, property));
         }
         if (property instanceof ArraySchema array) {
-            return convertType(array.getItems()).map(elementType -> new TypeTuple(
+            return convertType(openApi, array.getItems()).map(elementType -> new TypeTuple(
                     new ArrayType(elementType.type()),
                     array.items(elementType.schema())));
         }
         if (property instanceof MapSchema map && map.getAdditionalProperties() instanceof Schema<?> valueSchema) {
-            Optional<TypeTuple> mapType = convertType(valueSchema);
+            Optional<TypeTuple> mapType = convertType(openApi, valueSchema);
             if (mapType.isEmpty()) {
                 // fallback for invalid types - the value will be serialized json,
                 // which can be later processed using SQL json functions
@@ -948,7 +960,7 @@ public class OpenApiSpec
                 return Optional.of(FALLBACK_TYPE);
             }
             Map<String, TypeTuple> fieldTypes = properties.entrySet().stream()
-                    .map(prop -> Map.entry(prop.getKey(), convertType(prop.getValue())))
+                    .map(prop -> Map.entry(prop.getKey(), convertType(openApi, prop.getValue())))
                     .filter(entry -> entry.getValue().isPresent())
                     .collect(toMap(
                             Map.Entry::getKey,
@@ -986,7 +998,7 @@ public class OpenApiSpec
             return Optional.of(new TypeTuple(VARCHAR, property));
         }
         if (type.equals("object") && property.getAdditionalProperties() instanceof Schema<?> valueSchema) {
-            Optional<TypeTuple> mapType = convertType(valueSchema);
+            Optional<TypeTuple> mapType = convertType(openApi, valueSchema);
             if (mapType.isEmpty()) {
                 // fallback for invalid types - the value will be serialized json,
                 // which can be later processed using SQL json functions
@@ -997,7 +1009,7 @@ public class OpenApiSpec
                     new MapSchema().type("string").additionalProperties(convertedType.schema())));
         }
         if (type.equals("array")) {
-            return convertType(property.getItems()).map(elementType -> new TypeTuple(
+            return convertType(openApi, property.getItems()).map(elementType -> new TypeTuple(
                     new ArrayType(elementType.type()),
                     new ArraySchema().items(elementType.schema())));
         }
@@ -1011,9 +1023,9 @@ public class OpenApiSpec
         if (type.equals("int") || type.equals("integer")) {
             return Optional.of(new TypeTuple(INTEGER, property));
         }
-        Schema<?> referenced = getOpenApi().openApi().getComponents().getSchemas().get(type);
+        Schema<?> referenced = openApi.getComponents().getSchemas().get(type);
         if (referenced != null) {
-            return convertType(referenced).map(convertedType -> new TypeTuple(convertedType.type(), referenced));
+            return convertType(openApi, referenced).map(convertedType -> new TypeTuple(convertedType.type(), referenced));
         }
         // unknown and unsupported types will be returned as strings, which at least can be parsed with json functions
         return Optional.of(FALLBACK_TYPE);
