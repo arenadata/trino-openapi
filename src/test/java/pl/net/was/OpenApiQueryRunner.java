@@ -70,11 +70,13 @@ public class OpenApiQueryRunner
     public static void main(String[] args)
             throws Exception
     {
+        String spec = "http://localhost:8080/api/v1/openapi.yaml";
+        String baseUri = "http://localhost:8080/api/v1";
         ImmutableMap.Builder<String, String> properties = ImmutableMap.builder();
         if (System.getenv("OPENAPI_SPEC_LOCATION") == null || System.getenv("OPENAPI_BASE_URI") == null) {
             PetStoreServer server = new PetStoreServer(new KeycloakServer());
-            properties.put("spec-location", server.getSpecUrl());
-            properties.put("base-uri", server.getApiUrl());
+            properties.put("spec-location", spec);
+            properties.put("base-uri", baseUri);
         }
         else {
             properties.put("spec-location", System.getenv("OPENAPI_SPEC_LOCATION"));
@@ -83,11 +85,7 @@ public class OpenApiQueryRunner
         properties.putAll(Map.of(
                 "openApi.http-client.log.enabled", "true",
                 "openApi.http-client.log.path", "logs",
-                "authentication.type", requireNonNullElse(System.getenv("OPENAPI_AUTH_TYPE"), "api_key"),
-                "authentication.scheme", requireNonNullElse(System.getenv("OPENAPI_AUTH_SCHEME"), "basic"),
-                "authentication.username", requireNonNullElse(System.getenv("OPENAPI_USERNAME"), "test"),
-                "authentication.password", requireNonNullElse(System.getenv("OPENAPI_PASSWORD"), "abc123"),
-                "authentication.bearer-token", requireNonNullElse(System.getenv("OPENAPI_BEARER_TOKEN"), "")));
+                "authentication.type", requireNonNullElse(System.getenv("OPENAPI_AUTH_TYPE"), "none")));
         if (System.getenv("OPENAPI_CLIENT_ID") != null) {
             properties.putAll(Map.of(
                     "authentication.client-id", requireNonNullElse(System.getenv("OPENAPI_CLIENT_ID"), "sample-client-id"),

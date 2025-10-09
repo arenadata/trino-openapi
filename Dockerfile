@@ -3,6 +3,30 @@ FROM trinodb/trino-core:$TRINO_VERSION
 
 ARG VERSION
 
+COPY . .
+# Switch to root to install packages
+USER root
+
+# Install prerequisites, Java 24 (Temurin), and Maven
+RUN apt-get update && \
+    apt-get install -y wget gnupg curl && \
+    # Add Eclipse Temurin (Java 24) repo
+    wget -O- https://packages.adoptium.net/artifactory/api/gpg/key/public | apt-key add - && \
+    echo "deb https://packages.adoptium.net/artifactory/deb bookworm main" > /etc/apt/sources.list.d/adoptium.list && \
+    apt-get update && \
+    apt-get install -y temurin-24-jdk maven && \
+    # Clean up
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Verify installation
+RUN java -version && mvn -version
+
+# Switch back to Trino user
+USER trino
+
+RUN mvn clean package -DskipTests=true
+
+
 ADD target/trino-openapi-$VERSION/ /usr/lib/trino/plugin/openapi/
 ADD catalog/ /etc/trino/catalog/disabled/
 ADD docker-entrypoint.sh /usr/local/bin/
