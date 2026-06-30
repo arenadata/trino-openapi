@@ -14,6 +14,7 @@
 
 package pl.net.was;
 
+import com.fasterxml.jackson.core.JsonPointer;
 import com.google.common.collect.ImmutableMap;
 import io.swagger.v3.oas.models.media.Schema;
 import io.trino.spi.connector.ColumnMetadata;
@@ -31,17 +32,21 @@ public class OpenApiColumn
 {
     private final String name;
     private final String sourceName;
+    private final JsonPointer resultsPointer;
     private final Type type;
     private final Schema<?> sourceType;
     private final Map<HttpPath, ParameterLocation> requiresPredicate;
     private final Map<HttpPath, ParameterLocation> optionalPredicate;
     private final ColumnMetadata metadata;
     private final boolean isPageNumber;
+    private final boolean isPageSize;
+    private final boolean isUnwrapped;
     private final OpenApiColumnHandle handle;
 
     private OpenApiColumn(
             String name,
             String sourceName,
+            JsonPointer resultsPointer,
             Type type,
             Schema<?> sourceType,
             Map<HttpPath, ParameterLocation> requiresPredicate,
@@ -49,10 +54,13 @@ public class OpenApiColumn
             boolean isNullable,
             boolean isHidden,
             boolean isPageNumber,
+            boolean isPageSize,
+            boolean isUnwrapped,
             String comment)
     {
         this.name = name;
         this.sourceName = sourceName;
+        this.resultsPointer = resultsPointer;
         this.type = type;
         this.sourceType = sourceType;
         this.requiresPredicate = ImmutableMap.copyOf(requiresPredicate);
@@ -65,6 +73,8 @@ public class OpenApiColumn
                 .setComment(Optional.ofNullable(comment))
                 .build();
         this.isPageNumber = isPageNumber;
+        this.isPageSize = isPageSize;
+        this.isUnwrapped = isUnwrapped;
         this.handle = new OpenApiColumnHandle(name, type);
     }
 
@@ -76,6 +86,11 @@ public class OpenApiColumn
     public String getSourceName()
     {
         return sourceName;
+    }
+
+    public JsonPointer getResultsPointer()
+    {
+        return resultsPointer;
     }
 
     public Type getType()
@@ -108,6 +123,16 @@ public class OpenApiColumn
         return isPageNumber;
     }
 
+    public boolean isPageSize()
+    {
+        return isPageSize;
+    }
+
+    public boolean isUnwrapped()
+    {
+        return isUnwrapped;
+    }
+
     public OpenApiColumnHandle getHandle()
     {
         return handle;
@@ -131,6 +156,7 @@ public class OpenApiColumn
         OpenApiColumn that = (OpenApiColumn) o;
         return Objects.equals(name, that.name)
                 && Objects.equals(sourceName, that.sourceName)
+                && Objects.equals(resultsPointer, that.resultsPointer)
                 && Objects.equals(type, that.type)
                 && Objects.equals(sourceType, that.sourceType)
                 && Objects.equals(requiresPredicate, that.requiresPredicate)
@@ -145,6 +171,7 @@ public class OpenApiColumn
         return "OpenApiColumn{" +
                 "name='" + name + '\'' +
                 ", sourceName='" + sourceName + '\'' +
+                ", resultsPointer='" + resultsPointer + '\'' +
                 ", type=" + type +
                 ", sourceType=" + sourceType.getType() +
                 ", requiresPredicate=" + requiresPredicate +
@@ -156,7 +183,7 @@ public class OpenApiColumn
 
     public int hashCode()
     {
-        return Objects.hash(name, sourceName, type, sourceType, requiresPredicate, optionalPredicate, metadata, isPageNumber);
+        return Objects.hash(name, sourceName, resultsPointer, type, sourceType, requiresPredicate, optionalPredicate, metadata, isPageNumber);
     }
 
     public static OpenApiColumn.Builder builder()
@@ -173,6 +200,7 @@ public class OpenApiColumn
     {
         private String name;
         private String sourceName;
+        private JsonPointer resultsPointer;
         private Type type;
         private Schema<?> sourceType;
         private final SortedMap<HttpPath, ParameterLocation> requiresPredicate = new TreeMap<>();
@@ -180,6 +208,8 @@ public class OpenApiColumn
         private boolean isNullable;
         private boolean isHidden;
         private boolean isPageNumber;
+        private boolean isPageSize;
+        private boolean isUnwrapped;
         private String comment;
 
         private Builder() {}
@@ -188,6 +218,7 @@ public class OpenApiColumn
         {
             this.name = handle.getName();
             this.sourceName = handle.getSourceName();
+            this.resultsPointer = handle.getResultsPointer();
             this.type = handle.getType();
             this.sourceType = handle.getSourceType();
             this.requiresPredicate.putAll(handle.getRequiresPredicate());
@@ -195,7 +226,9 @@ public class OpenApiColumn
             this.isNullable = handle.getMetadata().isNullable();
             this.isHidden = handle.getMetadata().isHidden();
             this.isPageNumber = handle.isPageNumber();
-            this.comment = handle.getMetadata().getComment();
+            this.isPageSize = handle.isPageSize();
+            this.isUnwrapped = handle.isUnwrapped();
+            this.comment = handle.getMetadata().getComment().orElse(null);
         }
 
         public OpenApiColumn.Builder setName(String name)
@@ -207,6 +240,12 @@ public class OpenApiColumn
         public OpenApiColumn.Builder setSourceName(String sourceName)
         {
             this.sourceName = requireNonNull(sourceName, "sourceName is null");
+            return this;
+        }
+
+        public OpenApiColumn.Builder setResultsPointer(JsonPointer resultsPointer)
+        {
+            this.resultsPointer = requireNonNull(resultsPointer, "resultsPointer is null");
             return this;
         }
 
@@ -252,6 +291,18 @@ public class OpenApiColumn
             return this;
         }
 
+        public OpenApiColumn.Builder setIsPageSize(boolean pageSize)
+        {
+            this.isPageSize = pageSize;
+            return this;
+        }
+
+        public OpenApiColumn.Builder setIsUnwrapped(boolean isUnwrapped)
+        {
+            this.isUnwrapped = isUnwrapped;
+            return this;
+        }
+
         public OpenApiColumn.Builder setComment(String name)
         {
             if (name != null) {
@@ -265,6 +316,7 @@ public class OpenApiColumn
             return new OpenApiColumn(
                     name,
                     sourceName,
+                    resultsPointer,
                     type,
                     sourceType,
                     requiresPredicate,
@@ -272,6 +324,8 @@ public class OpenApiColumn
                     isNullable,
                     isHidden,
                     isPageNumber,
+                    isPageSize,
+                    isUnwrapped,
                     comment);
         }
     }

@@ -10,7 +10,7 @@
 
     <groupId>pl.net.was</groupId>
     <artifactId>trino-openapi</artifactId>
-    <version>1.85</version>
+    <version>1.85.1-4.3.0-0</version>
     <packaging>trino-plugin</packaging>
 
     <name>${project.artifactId}</name>
@@ -25,8 +25,8 @@
     </licenses>
 
     <scm>
-        <developerConnection>scm:git:https://github.com/nineinchnick/trino-openapi.git</developerConnection>
-        <tag>v1.85</tag>
+        <developerConnection>scm:git:https://github.com/arenadata/trino-openapi.git</developerConnection>
+        <tag>v1.85.1-4.3.0-0</tag>
     </scm>
 
     <distributionManagement>
@@ -53,7 +53,7 @@
         <air.build.jvmsize>4g</air.build.jvmsize>
         <air.test.jvm.additional-arguments>--add-modules=jdk.incubator.vector</air.test.jvm.additional-arguments>
 
-        <dep.trino.version>479</dep.trino.version>
+        <dep.trino.version>481</dep.trino.version>
         <dep.airlift.version>386</dep.airlift.version>
         <dep.jackson-annotations.version>2.20</dep.jackson-annotations.version>
         <dep.logback.version>1.5.22</dep.logback.version>
@@ -198,6 +198,12 @@
             <groupId>io.airlift</groupId>
             <artifactId>slice</artifactId>
             <scope>provided</scope>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.openjdk.jol</groupId>
+                    <artifactId>jol-core</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>
@@ -314,6 +320,13 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <repositories>
+        <repository>
+            <id>arenadata</id>
+            <url>https://maven.pkg.github.com/arenadata/*</url>
+        </repository>
+    </repositories>
 
     <build>
         <plugins>
