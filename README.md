@@ -124,6 +124,10 @@ APIs can use 4 different types of pagination:
 * Next page URL - the response includes an URL of the next set of results.
 
 The connector currently supports only the `Page` pagination.
+The first page follows the page parameter schema's numeric `default`, then its
+`minimum`, and otherwise starts at 0 for APIs without either annotation.
+One-based APIs should declare `default: 1` or `minimum: 1` on their page parameter.
+The requested page size remains constant across a query.
 
 To enable pagination, add a `x-trino` section in the path's operation section:
 

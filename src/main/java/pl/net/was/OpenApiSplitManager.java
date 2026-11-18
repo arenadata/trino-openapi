@@ -83,14 +83,14 @@ public class OpenApiSplitManager
         CompletableFuture<?> dynamicFilterFuture = whenCompleted(dynamicFilter)
                 .completeOnTimeout(null, TIMEOUT_MILLIS, MILLISECONDS);
         CompletableFuture<ConnectorSplitSource> splitSourceFuture = dynamicFilterFuture.thenApply(
-                ignored -> getSplitSource(table, dynamicFilter));
+                _ -> getSplitSource(table, dynamicFilter));
         return new DynamicFilteringSplitSource(dynamicFilterFuture, splitSourceFuture);
     }
 
     private static CompletableFuture<?> whenCompleted(DynamicFilter dynamicFilter)
     {
         if (dynamicFilter.isAwaitable()) {
-            return dynamicFilter.isBlocked().thenCompose(ignored -> whenCompleted(dynamicFilter));
+            return dynamicFilter.isBlocked().thenCompose(_ -> whenCompleted(dynamicFilter));
         }
         return NOT_BLOCKED;
     }

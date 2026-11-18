@@ -2,7 +2,7 @@ import logging
 from datetime import date, datetime
 from typing import Callable
 
-from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, Response
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -116,15 +116,31 @@ def item_categories() -> Results:
 
 
 @router.get("/items")
-def list_item(page: int = None, per_page: int = None) -> Results:
-    if page is None:
-        page = 1
+def list_item(page: int = Query(default=1, ge=1), per_page: int = None) -> Results:
     if per_page is None:
         per_page = 1
     offset = (page - 1) * per_page
     return Results(
         results=list(items.values())[offset:offset+per_page],
         total_results=len(items))
+
+
+@router.get("/zero_items")
+def zero_based_items(page: int = 0, per_page: int = 1) -> Results:
+    values = [Item(id=str(index), name=f"Item {index}", price=float(index)) for index in range(12)]
+    offset = page * per_page
+    return Results(results=values[offset:offset+per_page], total_results=len(values))
+
+
+@router.get("/unannotated_items")
+def unannotated_zero_based_items(page: int = None, per_page: int = 1) -> Results:
+    return zero_based_items(page or 0, per_page)
+
+
+@router.get("/minimum_items")
+def minimum_based_items(page: int = Query(default=None, ge=0), per_page: int = 1) -> Results:
+    offset = (page or 0) * per_page
+    return Results(results=list(items.values())[offset:offset+per_page], total_results=len(items))
 
 
 @router.get("/items/{item_id}")
@@ -167,6 +183,13 @@ def custom_openapi():
         "resultsPath": "$response.body#/results",
         "totalResultsPath": "$response.body#/total_results",
     }
+    for path in ["/zero_items", "/minimum_items", "/unannotated_items"]:
+        openapi_schema["paths"][path]["get"]["x-trino"] = {
+            "pageParam": "page",
+            "limitParam": "per_page",
+            "resultsPath": "$response.body#/results",
+            "totalResultsPath": "$response.body#/total_results",
+        }
     app.openapi_schema = openapi_schema
     return app.openapi_schema
 

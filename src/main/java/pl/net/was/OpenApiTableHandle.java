@@ -246,7 +246,7 @@ public class OpenApiTableHandle
             found = true;
             // remove from remaining constraints
             summary = summary.filter(
-                    (columnHandle, tupleDomain) -> !columnHandle.equals(column.getHandle()));
+                    (columnHandle, _) -> !columnHandle.equals(column.getHandle()));
         }
         if (!found) {
             return Optional.empty();
@@ -268,7 +268,7 @@ public class OpenApiTableHandle
             return null;
         }
         TupleDomain<ColumnHandle> newConstraint = constraint.filter(
-                (columnHandle, tupleDomain) -> columnHandle.equals(column));
+                (columnHandle, _) -> columnHandle.equals(column));
         if (domain.getValues().isDiscreteSet()) {
             return newConstraint;
         }

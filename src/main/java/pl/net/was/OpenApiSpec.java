@@ -165,6 +165,13 @@ public class OpenApiSpec
         return getOpenApi().securityRequirements();
     }
 
+    public Map<String, Object> getOperationExtensions(HttpPath httpPath)
+    {
+        Operation operation = getOpenApi().openApi().getPaths().get(httpPath.path())
+                .readOperationsMap().get(httpPath.method());
+        return firstNonNull(operation.getExtensions(), ImmutableMap.of());
+    }
+
     private OpenApiCacheEntity getOpenApi()
     {
         String openApiVersion = getOpenApiVersion();
@@ -883,7 +890,7 @@ public class OpenApiSpec
     {
         return pathItem.readOperationsMap().keySet().stream()
                 .filter(method -> filterPath(path, method))
-                .collect(toImmutableMap(identity(), method -> ImmutableList.of(path)));
+                .collect(toImmutableMap(identity(), _ -> ImmutableList.of(path)));
     }
 
     private Map<HttpPath, JsonPointer> errorPointers(PathItem pathItem, String path)
@@ -893,7 +900,17 @@ public class OpenApiSpec
 
     private Map<HttpPath, JsonPointer> resultsPointers(PathItem pathItem, String path)
     {
-        return pointers(pathItem, path, PAGINATION_RESULTS_PATH);
+        return pathItem.readOperationsMap().entrySet().stream()
+                .filter(entry -> filterPath(path, entry.getKey()))
+                .collect(toImmutableMap(
+                        entry -> new HttpPath(entry.getKey(), path),
+                        entry -> {
+                            Map<String, String> pageExtension = getPageSpecExtension(entry.getValue());
+                            Map<String, String> unwrapExtension = getUnwrapSpecExtension(entry.getValue());
+                            return unwrapExtension.isEmpty() ?
+                                    getJsonPointerFromPageSpec(pageExtension) :
+                                    getJsonPointerFromUnwrapSpec(pageExtension, unwrapExtension);
+                        }));
     }
 
     private Map<HttpPath, JsonPointer> pointers(PathItem pathItem, String path, String extensionName)
@@ -1003,7 +1020,7 @@ public class OpenApiSpec
                     .collect(toMap(
                             Map.Entry::getKey,
                             entry -> entry.getValue().get(),
-                            (a, b) -> a,
+                            (a, _) -> a,
                             LinkedHashMap::new));
             List<RowType.Field> fields = fieldTypes.entrySet().stream()
                     .map(prop -> RowType.field(prop.getKey(), prop.getValue().type()))
@@ -1015,7 +1032,7 @@ public class OpenApiSpec
                     .collect(toMap(
                             Map.Entry::getKey,
                             entry -> entry.getValue().schema(),
-                            (a, b) -> a,
+                            (a, _) -> a,
                             LinkedHashMap::new));
             return Optional.of(new TypeTuple(RowType.from(fields), object.properties(newProperties)));
         }
@@ -1083,12 +1100,12 @@ public class OpenApiSpec
                                 .map(OpenApiColumn::getRequiresPredicate)
                                 .flatMap(map -> map.entrySet().stream())
                                 .collect(
-                                        toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new)))
+                                        toMap(Map.Entry::getKey, Map.Entry::getValue, (a, _) -> a, LinkedHashMap::new)))
                         .setOptionalPredicate(sameColumns.stream()
                                 .map(OpenApiColumn::getOptionalPredicate)
                                 .flatMap(map -> map.entrySet().stream())
                                 .collect(
-                                        toMap(Map.Entry::getKey, Map.Entry::getValue, (a, b) -> a, LinkedHashMap::new)))
+                                        toMap(Map.Entry::getKey, Map.Entry::getValue, (a, _) -> a, LinkedHashMap::new)))
                         .build())
                 .collect(groupingBy(OpenApiColumn::getName, LinkedHashMap::new, toList()))
                 .values().stream()
