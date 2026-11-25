@@ -71,7 +71,7 @@ public class RateLimitedSplitSource
     @Override
     public void close()
     {
-        splits.forEachRemaining(split -> {});
+        splits.forEachRemaining(_ -> {});
     }
 
     @Override

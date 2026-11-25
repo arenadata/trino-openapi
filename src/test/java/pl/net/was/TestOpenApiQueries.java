@@ -28,6 +28,7 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestOpenApiQueries
@@ -74,7 +75,7 @@ public class TestOpenApiQueries
                 "base-uri", fastApiServer.getApiUrl()));
 
         return OpenApiQueryRunner.createQueryRunner(Map.of(
-                "openmeteo", Map.of("spec-location", "https://raw.githubusercontent.com/open-meteo/open-meteo/main/openapi.yml",
+                "openmeteo", Map.of("spec-location", requireNonNull(getClass().getClassLoader().getResource("openmeteo.yml")).toString(),
                         "base-uri", "https://api.open-meteo.com"),
                 "petstore", petStoreProperties.buildOrThrow(),
                 "fastapi", fastApiProperties.buildOrThrow()));
@@ -189,6 +190,31 @@ public class TestOpenApiQueries
         assertThat(rows)
                 .extracting(row -> row.getFields().getFirst())
                 .containsExactly("Portal Gun", "Plumbus");
+    }
+
+    @Test
+    public void itemsWithLimit()
+    {
+        assertQuery("SELECT name FROM fastapi.default.items LIMIT 1", "VALUES 'Portal Gun'");
+    }
+
+    @Test
+    public void zeroBasedPagination()
+    {
+        assertQuery("SELECT name FROM fastapi.default.zero_items LIMIT 7",
+                "VALUES 'Item 0', 'Item 1', 'Item 2', 'Item 3', 'Item 4', 'Item 5', 'Item 6'");
+        assertQuery("SELECT count(*) FROM fastapi.default.zero_items", "VALUES 12");
+        assertQuery("SELECT name FROM fastapi.default.minimum_items", "VALUES 'Portal Gun', 'Plumbus'");
+    }
+
+    @Test
+    public void unannotatedZeroBasedPagination()
+    {
+        assertQuery("SELECT name FROM fastapi.default.unannotated_items LIMIT 7",
+                "VALUES 'Item 0', 'Item 1', 'Item 2', 'Item 3', 'Item 4', 'Item 5', 'Item 6'");
+        assertQuery("SELECT name FROM fastapi.default.unannotated_items OFFSET 2 LIMIT 3",
+                "VALUES 'Item 2', 'Item 3', 'Item 4'");
+        assertQuery("SELECT count(*) FROM fastapi.default.unannotated_items", "VALUES 12");
     }
 
     @Test

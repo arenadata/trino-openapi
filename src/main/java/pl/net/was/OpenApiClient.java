@@ -57,6 +57,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.UncheckedIOException;
+import java.math.BigDecimal;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.text.NumberFormat;
@@ -129,7 +130,7 @@ public class OpenApiClient
             1_000_000_000L,
             10_000_000_000L,
             100_000_000_000L,
-            1000_000_000_000L
+            1000_000_000_000L,
     };
 
     @Inject
@@ -186,7 +187,7 @@ public class OpenApiClient
                     OpenApiTableHandle pageTable = table.cloneWithConstraint(constraint);
                     return makeRequest(pageTable, httpPath, pathWithParams.getValue(), bodyGenerator, responseHandler);
                 },
-                0,
+                getFirstPage(pageColumn),
                 limit,
                 1);
     }
@@ -199,7 +200,7 @@ public class OpenApiClient
         TupleDomain<ColumnHandle> pageConstraint;
         if (pageSizeColumnOpt.isPresent()) {
             OpenApiColumn pageSizeColumn = pageSizeColumnOpt.get();
-            int pageSize = limit == DEFAULT_LIMIT ? DEFAULT_PAGE_SIZE : getPageSize(page, DEFAULT_PAGE_SIZE, limit);
+            int pageSize = (int) Math.min(limit, DEFAULT_PAGE_SIZE);
             pageConstraint = TupleDomain.fromFixedValues(Map.of(
                     pageColumn.getHandle(), getValue(pageColumn, page),
                     pageSizeColumn.getHandle(), getValue(pageSizeColumn, pageSize)));
@@ -218,13 +219,16 @@ public class OpenApiClient
                 column.getType() instanceof BigintType ? (long) value : value);
     }
 
-    private int getPageSize(int page, int pageSize, long limit)
+    private static int getFirstPage(OpenApiColumn pageColumn)
     {
-        if (page == 0) {
-            return (int) limit;
+        Schema<?> schema = pageColumn.getSourceType();
+        if (schema.getDefault() instanceof Number defaultPage) {
+            return new BigDecimal(defaultPage.toString()).intValueExact();
         }
-        int requestedRows = (page + 1) * pageSize;
-        return requestedRows > limit ? (int) limit - (page * pageSize) : requestedRows;
+        if (schema.getMinimum() != null) {
+            return schema.getMinimum().intValueExact();
+        }
+        return 0;
     }
 
     private BodyGenerator getBodyGenerator(OpenApiTableHandle table, HttpPath httpPath)
@@ -712,7 +716,7 @@ public class OpenApiClient
         if (!jsonNode.isObject()) {
             throw new TrinoException(GENERIC_INTERNAL_ERROR, format("JsonNode is not an object: %s", jsonNode));
         }
-        Map<String, Object> extensions = table.getMethodExtensions().get(httpPath.method());
+        Map<String, Object> extensions = openApiSpec.getOperationExtensions(httpPath);
         Map<String, String> unwrapSpecExtension = getMapOfStrings(extensions == null ?
                 ImmutableMap.of() : firstNonNull(extensions.get(UNWRAP_SPEC_EXTENSION),
                 ImmutableMap.of()));
@@ -730,7 +734,7 @@ public class OpenApiClient
             resultNodes = jsonNode.at(resultsPointer);
         }
         else {
-            resultNodes = getResultJsonNodes(jsonNode, columns);
+            resultNodes = List.of(jsonNode);
         }
         return createResultRecords(httpPath, params, jsonNode, resultNodes, columns);
     }
@@ -793,7 +797,7 @@ public class OpenApiClient
             if (pointer == null) {
                 continue;
             }
-            pointerMap.computeIfAbsent(pointer, k -> new ArrayList<>()).add(column);
+            pointerMap.computeIfAbsent(pointer, _ -> new ArrayList<>()).add(column);
         }
         List<WrapJsonNode> nodes = new ArrayList<>();
         ArrayNode unwrappedNode = null;
@@ -837,29 +841,6 @@ public class OpenApiClient
             }
         }
         resultNodes = resultArrayNode;
-        return resultNodes;
-    }
-
-    private Iterable<JsonNode> getResultJsonNodes(JsonNode jsonNode, List<OpenApiColumn> columns)
-    {
-        Iterable<JsonNode> resultNodes;
-        resultNodes = List.of(jsonNode);
-        Optional<JsonPointer> resultsPointer = columns.stream()
-                .map(OpenApiColumn::getResultsPointer)
-                .filter(pointer -> pointer != null && pointer.length() != 0)
-                .reduce((a, b) -> {
-                    if (!a.equals(b)) {
-                        throw new IllegalStateException("More than one results pointer found");
-                    }
-                    return a;
-                });
-        if (resultsPointer.isPresent()) {
-            JsonNode resultNode = jsonNode.at(resultsPointer.get());
-            if (!(resultNode instanceof ArrayNode)) {
-                throw new IllegalArgumentException("Result path points to a node that's not an array");
-            }
-            resultNodes = jsonNode.at(resultsPointer.get());
-        }
         return resultNodes;
     }
 
@@ -922,11 +903,11 @@ public class OpenApiClient
             @Override
             public boolean hasNext()
             {
-                if (rows != null && rows.hasNext()) {
-                    return true;
-                }
                 if (resultSize >= limit) {
                     return false;
+                }
+                if (rows != null && rows.hasNext()) {
+                    return true;
                 }
                 Iterable<List<?>> items = getter.apply(page);
                 page += pageIncrement;

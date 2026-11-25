@@ -5,12 +5,12 @@
     <parent>
         <groupId>io.airlift</groupId>
         <artifactId>airbase</artifactId>
-        <version>334</version>
+        <version>375</version>
     </parent>
 
     <groupId>pl.net.was</groupId>
     <artifactId>trino-openapi</artifactId>
-    <version>1.85.1-4.3.0-0</version>
+    <version>1.85.1-4.5.0-0</version>
     <packaging>trino-plugin</packaging>
 
     <name>${project.artifactId}</name>
@@ -53,10 +53,9 @@
         <air.build.jvmsize>4g</air.build.jvmsize>
         <air.test.jvm.additional-arguments>--add-modules=jdk.incubator.vector</air.test.jvm.additional-arguments>
 
-        <dep.trino.version>481</dep.trino.version>
-        <dep.airlift.version>386</dep.airlift.version>
-        <dep.jackson-annotations.version>2.20</dep.jackson-annotations.version>
-        <dep.logback.version>1.5.22</dep.logback.version>
+        <dep.trino.version>481.3-4.5.0-2</dep.trino.version>
+        <dep.airlift.version>424.1-4.5.0-0</dep.airlift.version>
+        <dep.guava.version>33.7.2-jre</dep.guava.version>
         <dep.swagger-parser.version>2.1.36</dep.swagger-parser.version>
         <dep.swagger-core.version>2.1.36</dep.swagger-core.version>
         <dep.swagger-models.version>2.2.41</dep.swagger-models.version>
@@ -102,6 +101,11 @@
                 <groupId>org.antlr</groupId>
                 <artifactId>antlr4-runtime</artifactId>
                 <version>4.13.2</version>
+            </dependency>
+            <dependency>
+                <groupId>org.yaml</groupId>
+                <artifactId>snakeyaml</artifactId>
+                <version>2.5</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -228,7 +232,7 @@
         <dependency>
             <groupId>com.google.errorprone</groupId>
             <artifactId>error_prone_annotations</artifactId>
-            <version>${dep.errorprone.version}</version>
+            <version>2.50.0</version>
             <scope>runtime</scope>
         </dependency>
 
@@ -242,7 +246,7 @@
         <dependency>
             <groupId>io.airlift</groupId>
             <artifactId>units</artifactId>
-            <version>1.12</version>
+            <version>1.13</version>
             <scope>runtime</scope>
         </dependency>
 

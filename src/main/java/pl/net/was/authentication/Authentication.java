@@ -135,7 +135,7 @@ public class Authentication
         // only one of the requirements needs to be satisfied - test which methods are configured, pick first one, and only fail if there are none
         for (SecurityRequirement requirement : requirements) {
             try {
-                requirement.forEach((name, options) -> {
+                requirement.forEach((name, _) -> {
                     SecurityScheme securitySchema = spec.getSecuritySchemas().get(name);
                     requireNonNull(securitySchema, "securitySchema is null");
                     switch (securitySchema.getType()) {
